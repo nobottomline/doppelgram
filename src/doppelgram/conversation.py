@@ -309,10 +309,8 @@ class ConversationStore:
     def people(self) -> list[Person]:
         return [self._person(r) for r in self.db.execute("SELECT * FROM people ORDER BY created")]
 
-    def add_person(self, ref: PersonRef, bot: str, card: str, age: int | None, now: float,
-                   score: int | None = None) -> bool:
-        """The age is used for the decision and never stored; the profile text is kept without digits
-        (it is needed to write a first message)."""
+    def add_person(self, ref: PersonRef, bot: str, card: str, now: float, score: int | None = None) -> bool:
+        """The profile text is kept without digits (it is needed to write a first message); no age is stored."""
         cur = self.db.execute(
             "INSERT OR IGNORE INTO people(user_id, username, name, bot, card, age, created, score) "
             "VALUES(?,?,?,?,?,?,?,?)", (ref.user_id, ref.username, ref.name, bot, scrub_text(card), None, now, score))
@@ -465,14 +463,14 @@ class ConversationManager:
 
     # --- inputs ---------------------------------------------------------------
     async def on_match(self, bot: str, links: list[str], mention_ids: list[int], card: str,
-                       age: int | None, score: int | None = None) -> None:
+                       score: int | None = None) -> None:
         """A dating bot reported a mutual like: remember the person (and maybe write first)."""
         try:
-            await self._on_match(bot, links, mention_ids, card, age, score)
+            await self._on_match(bot, links, mention_ids, card, score)
         finally:
             await self._flush_breaker()
 
-    async def _on_match(self, bot, links, mention_ids, card, age, score=None) -> None:
+    async def _on_match(self, bot, links, mention_ids, card, score=None) -> None:
         if not self.enabled or self.stopped:
             return
         try:
@@ -489,17 +487,12 @@ class ConversationManager:
         now = self.clock()
         known = self.store.person(ref.user_id)
         if known is None:
-            self.store.add_person(ref, bot, card, age, now, score)
+            self.store.add_person(ref, bot, card, now, score)
         else:
             if card and not known.card:
                 self.store.update(ref.user_id, card=scrub_text(card))
             if score is not None and known.score is None:
                 self.store.update(ref.user_id, score=score)
-        if age is not None and age < self.cfg.min_match_age:
-            # Re-checked on every match notice: a later card may reveal the age.
-            self._block(ref.user_id)
-            await self.say(f"[{bot}] {ref.name}: возраст {age}, агент не будет переписываться.")
-            return
         if known is not None:
             return
         self.allowed.add(ref.user_id)

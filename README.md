@@ -147,7 +147,6 @@ These rules hold in every mode:
   paused and handed to you.
 * **Meetings, money, contacts and links, explicit topics, media, and anything unclear** go to you with the
   context and the agent's draft; the chat waits for your answer.
-* **Age.** No chats with matches younger than `min_match_age` (default 18), read from their profile card.
 * **You can always take over.** If you write to the person yourself, the agent steps back from that chat.
 * **Account safety.** Writing first is off by default and capped by `first_messages_per_day` when on (writing
   first to strangers is the main cause of `PEER_FLOOD` restrictions); an hourly send cap, quiet hours and

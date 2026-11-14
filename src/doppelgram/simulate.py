@@ -98,7 +98,7 @@ async def simulate(cfg: ConversationConfig, llm: LLMClient, *, card: str, person
             manager.on_message(ref.user_id)
         return bool(texts)
 
-    await manager.on_match("simulation", ["https://t.me/match_example"], [], card, None, 10)
+    await manager.on_match("simulation", ["https://t.me/match_example"], [], card, 10)
     if not agent_first:
         await partner_says()
     for _ in range(turns):

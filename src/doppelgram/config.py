@@ -139,7 +139,6 @@ class ConversationConfig:
     style_file: Path
     enabled: bool = False
     mode: str = "approve"  # approve | auto
-    min_match_age: int = 18
     # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
     # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
     write_first: bool = False
@@ -281,7 +280,8 @@ _CONV_KEYS = {f.name for f in fields(ConversationConfig)}
 
 def _conversations(base: Path, table: dict) -> ConversationConfig:
     values = dict(table)
-    values.pop("owner_age", None)  # removed option: ignored in older configs
+    for removed in ("owner_age", "min_match_age"):  # removed options: ignored in older configs
+        values.pop(removed, None)
     unknown = set(values) - _CONV_KEYS
     if unknown:
         raise ConfigError(f"unknown conversations option(s): {', '.join(sorted(unknown))}")

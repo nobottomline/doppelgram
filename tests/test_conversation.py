@@ -89,8 +89,8 @@ def make(tmp_path: Path, **over):
     return m, people, inbox, clock
 
 
-async def match(m, age=None, score=10):
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – люблю горы", age, score)
+async def match(m, score=10):
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – люблю горы", score)
 
 
 def last_card(inbox) -> int:
@@ -189,16 +189,6 @@ async def test_quiet_hours_postpone_auto_messages(tmp_path):
     assert m.store.next_due() > clock.t
 
 
-async def test_minor_match_is_blocked(tmp_path):
-    m, people, inbox, clock = make(tmp_path)
-    await match(m, age=17)
-    await m.tick()
-    assert m.store.person(555).state == "blocked" and m.llm.calls == []
-    m.on_message(555)
-    await m.tick()
-    assert m.llm.calls == []
-
-
 async def test_owner_writing_themselves_takes_over(tmp_path):
     m, people, inbox, clock = make(tmp_path)
     await match(m)
@@ -237,8 +227,8 @@ async def test_first_message_cap(tmp_path):
         return PersonRef(int(links[0]), None, f"p{links[0]}")
 
     people.resolve = resolve
-    await m.on_match("дайвинчик", ["1"], [], "", None, 10)
-    await m.on_match("дайвинчик", ["2"], [], "", None, 10)
+    await m.on_match("дайвинчик", ["1"], [], "", 10)
+    await m.on_match("дайвинчик", ["2"], [], "", 10)
     await m.tick()
     clock.t += 31
     await m.tick()
@@ -351,16 +341,6 @@ async def test_restriction_while_notifying_trips_breaker(tmp_path):
     await match(m)
     await m.tick()
     assert tripped == ["PeerFloodError"] and m.stopped
-
-
-async def test_later_match_with_minor_age_blocks_known_person(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto")
-    await match(m, age=None)
-    await match(m, age=16)
-    await m.tick()
-    clock.t += 31
-    await m.tick()
-    assert m.store.person(555).state == "blocked" and people.sent_texts(555) == []
 
 
 async def test_owner_text_respects_hourly_cap(tmp_path):
@@ -694,7 +674,7 @@ async def test_restored_card_keeps_the_owner_text(tmp_path, failure):
 
 async def test_match_profile_is_stored_without_age_and_age_is_never_stored(tmp_path):
     m, people, inbox, clock = make(tmp_path)
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – рост 170", 23, 10)
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – рост 170", 10)
     person = m.store.person(555)
     assert person.age is None and not any(ch.isdigit() for ch in person.card)
     raw = m.store.db.execute("SELECT card, age FROM people").fetchall()

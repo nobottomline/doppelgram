@@ -579,6 +579,7 @@ def test_a_menu_number_for_a_denied_item_is_refused():
 
 def test_the_removed_owner_age_option_is_ignored_in_old_configs(tmp_path):
     from doppelgram.config import load_config
-    (tmp_path / "config.toml").write_text('[conversations]\nowner_age = 17\nmode = "auto"\n', encoding="utf-8")
+    (tmp_path / "config.toml").write_text('[conversations]\nowner_age = 17\nmin_match_age = 18\nmode = "auto"\n',
+                                          encoding="utf-8")
     conv = load_config(tmp_path / "config.toml", require_llm=False, require_telegram=False).conversations
     assert conv.mode == "auto" and not hasattr(conv, "owner_age")

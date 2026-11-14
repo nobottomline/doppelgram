@@ -197,7 +197,7 @@ class Agent:
         self.on_restricted = on_restricted  # account-wide circuit breaker (stops every bot)
         self._ref_cache: dict[int, str] = {}
         self.name = name or label or "bot"
-        # (bot, links, mention ids, card text, age) -> conversation manager, set by the supervisor
+        # (bot, links, mention ids, card text, taste score) -> conversation manager, set by the supervisor
         self.on_match: Callable[..., Awaitable[None]] | None = None
         # Recently decided picture cards (text, taste score), to attach to a match. In memory only.
         self._recent_cards: list[tuple[str, int | None]] = []
@@ -761,8 +761,7 @@ class Agent:
                            + (f"\nОценка агента: {score}/10" if score is not None else ""))
             if self.on_match is not None:
                 # The card is stored as is; the conversation module sanitizes it when it builds a prompt.
-                await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card,
-                                    self._card_age(card) if card else None, score)
+                await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card, score)
 
     def _allowed_commands(self) -> tuple[str, ...]:
         start = self.b.start_command.split()[:1]
