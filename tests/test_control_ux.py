@@ -1685,3 +1685,28 @@ async def test_a_digit_rating_is_the_score_passed_with_a_match(tmp_path):
                                    links=("https://t.me/anya_example",)))
     await agent.step_safely()
     assert got and got[0][-1] == 7  # the pressed rating, not the model's separate estimate
+
+
+async def test_the_score_survives_an_owner_confirmation(tmp_path):
+    leo = FakeLeomatch()
+
+    async def silent(text):
+        leo.sent.append(text)
+    leo.send_to_bot = silent
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("дайвинчик", leo, lambda t, i: {
+        "action": "click", "button_id": "k0c0", "score": 9})], mode="supervised",
+        **dict(LEO_GO, match_pattern="Начинай общаться"))
+    agent = agents["дайвинчик"]
+    got = []
+
+    async def on_match(*args):
+        got.append(args)
+    agent.on_match = on_match
+    leo.messages.append(BotMessage(id=leo._id(), date=1, text="Аня, Москва", media_kind="photo", media_key="a",
+                                   buttons=reply_kb([["❤️", "👎", "💤"]])))
+    await agent.step_safely()
+    await send(sup, "ок", reply_to=agent.store.latest_pending().control_msg_id)
+    leo.messages.append(BotMessage(id=leo._id(), date=2, text="Начинай общаться 👉 Аня",
+                                   links=("https://t.me/anya_example",)))
+    await agent.step_safely()
+    assert leo.sent == ["❤️"] and got and got[0][-1] == 9

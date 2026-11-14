@@ -940,3 +940,42 @@ async def test_simulation_runs_offline_with_fake_models(tmp_path):
                    out=lines.append)
     assert any("вы (агент): привет, нормально) ты как?" in x for x in lines)
     assert any("Аня: привет) как дела?" in x for x in lines)
+
+
+async def test_a_legacy_zero_cap_still_allows_writing_first_once_switched_on(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, first_messages_per_day=0)
+    await m.command("chat_mode", "first:on")
+    await match(m, score=10)
+    await m.tick()
+    assert "Черновик" in inbox[-1]
+
+
+async def test_a_meeting_offer_reaches_the_owner_even_if_the_model_fails(tmp_path):
+    from doppelgram.llm import LLMError
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "давай встретимся завтра?")
+    m.on_message(555)
+    m.llm.reply = lambda msgs: (_ for _ in ()).throw(LLMError("down"))
+    clock.t += 11
+    await m.tick()
+    assert "речь о встрече" in inbox[-1] and "Черновик агента" not in inbox[-1]
+
+
+async def test_a_meeting_draft_respects_the_message_length(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, max_message_chars=50)
+    await match(m)
+    people.incoming(555, "давай встретимся завтра?")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["а" * 500]}
+    clock.t += 11
+    await m.tick()
+    assert "а" * 51 not in inbox[-1] and "а" * 50 in inbox[-1]
+
+
+async def test_switching_writing_first_off_before_the_chat_is_looked_at(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=True)
+    await match(m, score=10)  # scheduled to write first
+    await m.command("chat_mode", "first:off")
+    await m.tick()
+    assert not any("Черновик" in t for t in inbox) and m.llm.calls == []

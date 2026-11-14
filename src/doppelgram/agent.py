@@ -1203,7 +1203,7 @@ class Agent:
             return
         self.store.add_pending(Pending(ctrl_id, msg.id, obs.rev, {
             "button_id": d.button_id, "description": brain.traits_text(d.traits), "reason": "",
-            "confidence": d.confidence}, choices, self.clock(), kind=kind, labels=labels))
+            "confidence": d.confidence, "score": d.score}, choices, self.clock(), kind=kind, labels=labels))
         self.store.mark(msg.id, obs.rev, "pending", self.clock())
 
     def _card_fits_mode(self, kind: str) -> bool:
@@ -1219,7 +1219,8 @@ class Agent:
         self.store.delete_pending(pending.control_msg_id)
         self.store.unmark(obs.current.id, obs.rev)
         d = Decision(action="click", button_id=pending.decision.get("button_id"),
-                     reason="владелец не ответил вовремя", confidence=pending.decision.get("confidence"))
+                     reason="владелец не ответил вовремя", confidence=pending.decision.get("confidence"),
+                     score=pending.decision.get("score"))
         if not await self._execute(obs, d, decided_by="model", epoch=epoch):
             self.wake.set()
 
@@ -1476,7 +1477,7 @@ class Agent:
                 self.wake.set()
                 return
             d = Decision(action="click", button_id=button_id, reason=cmd.note or "выбор владельца",
-                         confidence=1.0)
+                         confidence=1.0, score=pending.decision.get("score"))
             # Consume the card before acting, so a failure can never lead to a second press.
             self.store.delete_pending(pending.control_msg_id)
             ok = await self._execute(fresh, d, decided_by="owner", epoch=self.epoch)

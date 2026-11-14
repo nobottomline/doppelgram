@@ -515,7 +515,7 @@ class ConversationManager:
         if not self.write_first:
             return "Первым агент не пишет: отвечает, только когда напишут вам."
         return (f"Первым агент пишет мэтчам с оценкой от {self.write_first_min_score}/10, "
-                f"не больше {self.cfg.first_messages_per_day} в день.")
+                f"не больше {self.first_messages_cap} в день.")
 
     @property
     def write_first(self) -> bool:
@@ -526,6 +526,11 @@ class ConversationManager:
     def write_first_min_score(self) -> int:
         v = self.store.get("write_first_min_score")
         return self.cfg.write_first_min_score if v is None else int(v)
+
+    @property
+    def first_messages_cap(self) -> int:
+        """The daily cap; a legacy 0 ("never") falls back to 3 once writing first is switched on."""
+        return self.cfg.first_messages_per_day if self.cfg.first_messages_per_day > 0 else 3
 
     def may_write_first(self, score: int | None) -> bool:
         """Only with writing first switched on, and only to a match the agent rated high enough (an unknown
@@ -639,16 +644,22 @@ class ConversationManager:
             return  # already waiting for the owner on exactly this state
         if first and not self.may_write_first(person.score):
             return  # we do not write first to this person: wait until they write
-        if first and self.store.first_messages_since(now - 86400) >= self.cfg.first_messages_per_day:
+        if first and self.store.first_messages_since(now - 86400) >= self.first_messages_cap:
             self.store.update(person.user_id, due_at=now + 3600)
             return
         for m in new:
             category = classify_incoming(m.text, m.media_kind)
-            if category == "meeting" and not self._over_budget(now):
-                # The goal is coming true: prepare an answer for the owner to review instead of an empty card.
-                _, draft, _ = parse_reply(await self._compose(person, history))
-                await self._escalate(person, history, upto, category, ESCALATIONS[category],
-                                     [humanize(t, lowercase=self.cfg.lowercase) for t in draft][:3])
+            if category == "meeting":
+                # The goal is coming true: prepare an answer for the owner to review. The owner is told even
+                # if the draft cannot be made (budget, model failure).
+                draft: list[str] = []
+                if not self._over_budget(now):
+                    try:
+                        draft = parse_reply(await self._compose(person, history))[1]
+                    except LLMError as exc:
+                        log.warning("no draft for a meeting offer: %s", exc)
+                draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in draft][:3]
+                await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t])
                 return
             if category:
                 await self._escalate(person, history, upto, category, ESCALATIONS[category], [])
@@ -854,7 +865,7 @@ class ConversationManager:
         if first_of_batch and not history and not approved and not self.may_write_first(person.score):
             return "declined", latest  # writing first was switched off (or the threshold raised) meanwhile
         if (first_of_batch and not history  # writing first: the person has not written anything yet
-                and self.store.first_messages_since(now - 86400) >= self.cfg.first_messages_per_day):
+                and self.store.first_messages_since(now - 86400) >= self.first_messages_cap):
             # Writing first to strangers is what gets accounts restricted: the daily cap is strict.
             return "capped", latest
         return "ok", latest
