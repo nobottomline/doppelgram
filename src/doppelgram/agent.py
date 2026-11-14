@@ -81,16 +81,16 @@ class Observation:
         return self.image_msg is not None and self.image_msg.id != self.current.id
 
 
-_MENU_LINE_RE = re.compile(r"^\s*(\d{1,2})\s*[.)]\s*(.+)$", re.M)
 
 
 def _menu_lines(text: str) -> dict[str, str]:
-    """'1. Смотреть анкеты\n2. Купить Премиум' -> {'1': 'Смотреть анкеты', '2': 'Купить Премиум'}."""
-    return {m.group(1): m.group(2) for m in _MENU_LINE_RE.finditer(text or "")}
+    return brain.menu_lines(text)
 
 
 # Purchase intent in any button label: such a button is never a refusal, whatever else it says.
 _BUY_RE = re.compile(r"купи|оформ|оплат|подключ|активир|хочу|приобр|buy|purchase|activate|subscribe|upgrade", re.I)
+# Agreeing to whatever the message asks: under a charge question that means paying.
+_AGREE_RE = re.compile(r"\W*(?:да|ок|ok|yes|конечно|подтвер|соглас|продолж|continue|confirm)\b", re.I)
 # A price on a button: whatever else it says, pressing it may cost money.
 _PRICE_RE = re.compile(r"₽|\$|€|руб|⭐|stars?\b|\bза\s*\d", re.I)
 
@@ -896,6 +896,12 @@ class Agent:
             return True
         if not _CHARGE_RE.search(cur.text or ""):
             return False
+        # "1. Смотреть анкеты / 2. Купить Премиум": choosing the free item is fine, its own line decides.
+        number = (button.text if button is not None else d.text or "").strip()
+        item = brain.menu_lines(cur.text).get(number)
+        if item is not None:  # "Да" / "Продолжить" under a charge question is agreeing to pay
+            return bool(_CHARGE_RE.search(item) or _BUY_RE.search(item) or _PRICE_RE.search(item)
+                        or _AGREE_RE.match(item))
         if d.action == "click":
             return button is not None and not self._rates_profile(obs, button.id)
         start = self.b.start_command.split()[0] if self.b.start_command else None
@@ -1101,7 +1107,7 @@ class Agent:
             return False
         if self.restricted:  # the breaker may have tripped while the chat was re-read
             return False
-        if epoch is not None and (epoch != self.epoch or not self.active()):
+        if epoch is not None and (epoch != self.epoch or not allowed):
             # The owner may have stopped us while the chat was being re-read.
             self.wake.set()
             return False

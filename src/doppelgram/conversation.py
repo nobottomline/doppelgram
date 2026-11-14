@@ -513,7 +513,10 @@ class ConversationManager:
                 async with self.lock:
                     try:
                         await self._process(person)
-                    except (AccountRestricted, RateLimited):
+                    except AccountRestricted:
+                        raise
+                    except RateLimited as exc:  # this chat was already taken off the queue: put it back
+                        self.store.update(person.user_id, due_at=self.clock() + exc.seconds + 5)
                         raise
                     except Exception as exc:  # one chat must not stop the others: retry it later
                         level = logging.ERROR if isinstance(exc, (TransportError, LLMError)) else logging.CRITICAL
@@ -657,6 +660,8 @@ class ConversationManager:
                               f"«пропуск» или «сам».")
         if ctrl is not None:
             self.store.add_card(ctrl, person.user_id, "draft", upto, messages, self.clock())
+        else:  # the draft never reached the owner: try again later
+            self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
 
     async def _escalate(self, person: Person, history, upto: int, category: str, reason: str,
                         messages: list[str]) -> None:
@@ -670,6 +675,8 @@ class ConversationManager:
                               f"«веди» — пусть агент продолжает, «сам» — дальше пишете вы.")
         if ctrl is not None:
             self.store.add_card(ctrl, person.user_id, "escalation", upto, messages, self.clock())
+        else:  # the owner never got it: do not leave the chat paused with nobody aware, try again later
+            self.store.update(person.user_id, state="active", due_at=self.clock() + self.RETRY_S)
 
     async def _send_outbox(self, user_id: int, upto: int, messages: list[str], approved: bool) -> None:
         self.store.drop_outbox(user_id)

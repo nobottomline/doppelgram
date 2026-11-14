@@ -232,6 +232,12 @@ def _float(v) -> float | None:
 
 
 _MENU_NUMBER_RE = re.compile(r"\d{1,2}")
+_MENU_LINE_RE = re.compile(r"^\s*(\d{1,2})\s*[.)]\s*(.+)$", re.M)
+
+
+def menu_lines(text: str | None) -> dict[str, str]:
+    """'1. Смотреть анкеты\n2. Купить Премиум' -> {'1': 'Смотреть анкеты', '2': 'Купить Премиум'}."""
+    return {m.group(1): m.group(2) for m in _MENU_LINE_RE.finditer(text or "")}
 
 
 def validate_decision(data: dict, msg: BotMessage, *, max_wait_s: float, max_send_chars: int,
@@ -281,6 +287,9 @@ def validate_decision(data: dict, msg: BotMessage, *, max_wait_s: float, max_sen
             return refuse(f"модель хотела отправить запрещённый текст «{text[:40]}»")
         # Free text is a channel out of the prompt (taste, rules, examples): only an allowed command or a
         # number from a text menu may be typed.
+        item = menu_lines(msg.text).get(text) if _MENU_NUMBER_RE.fullmatch(text) else None
+        if item is not None and any(x and x.lower() in item.lower() for x in deny):
+            return refuse(f"модель выбрала запрещённый пункт меню «{item[:40]}»")
         if not (_MENU_NUMBER_RE.fullmatch(text)
                 or (text.split()[0] in allowed_commands and len(text.split()) == 1)):
             return refuse("модель хотела отправить боту произвольный текст")

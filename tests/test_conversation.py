@@ -775,3 +775,35 @@ async def test_the_agent_never_proposes_a_meeting_by_itself(tmp_path):
     clock.t += 31
     await m.tick()
     assert people.sent_texts(555) == [] and any("встреч" in t.lower() or "решаете вы" in t for t in inbox)
+
+
+async def test_flood_wait_while_reading_a_chat_puts_it_back(tmp_path):
+    from doppelgram.transport import RateLimited
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    await match(m)
+    real = people.history
+
+    async def flooded(user_id, limit):
+        raise RateLimited(60)
+    people.history = flooded
+    await m.tick()
+    people.history = real
+    assert m.store.next_due() is not None and m.store.next_due() >= clock.t + 60
+
+
+async def test_an_escalation_that_did_not_reach_the_owner_is_retried(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    await match(m)
+    people.incoming(555, "давай встретимся завтра")
+    m.on_message(555)
+    real = m.say
+
+    async def offline(*a, **k):
+        return None
+    m.say = offline
+    clock.t += 11
+    await m.tick()
+    m.say = real
+    clock.t += ConversationManager.RETRY_S + 1
+    await m.tick()
+    assert any("встрет" in t.lower() for t in inbox)

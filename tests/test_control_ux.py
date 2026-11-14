@@ -1632,3 +1632,28 @@ async def test_a_reply_keyboard_far_back_is_still_seen(tmp_path):
         leo.messages.append(BotMessage(id=leo._id(), date=1, text=f"Новость {k}"))
     await steps(agents, 1)
     assert leo.sent[-1:] == ["🚀 Смотреть анкеты"]
+
+
+@pytest.mark.parametrize("text, sent", [("1", True), ("2", False)])
+async def test_a_free_item_of_a_text_menu_with_a_paid_one_is_typed(tmp_path, text, sent):
+    leo = FakeLeomatch()
+
+    async def silent(t):
+        leo.sent.append(t)
+    leo.send_to_bot = silent
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("дайвинчик", leo, lambda t, i: {"action": "send", "text": text})],
+                                  mode="auto", **dict(LEO_GO, deny_buttons=["Премиум"]))
+    leo.messages.append(BotMessage(id=leo._id(), date=1, text="1. Смотреть анкеты\n2. Купить Премиум за 99 ₽"))
+    await steps(agents, 1)
+    assert (text in leo.sent) is sent
+
+
+async def test_an_owner_answer_after_working_hours_still_presses(tmp_path):
+    sup, agents, inbox, clock, *_ = make(tmp_path, mode="supervised", active_hours_enabled=True,
+                                         active_hours="0-24")
+    agent, bot = agents["арт"], agents["арт"].tg
+    await steps(agents, 2)
+    card = agent.store.latest_pending().control_msg_id
+    agent.b = replace(agent.b, active_hours="01:00-01:01")  # now outside working hours
+    await send(sup, "2", reply_to=card)
+    assert bot.ratings == ["2"]

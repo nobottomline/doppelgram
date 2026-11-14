@@ -566,3 +566,12 @@ def test_malformed_chat_replies_escalate_instead_of_crashing():
     assert classify_outgoing("приеду завтра в восемь") == "meeting"
     assert classify_outgoing("я не бот, честно") == "ai_question"
     assert classify_outgoing("как прошёл день?") is None
+
+
+def test_a_menu_number_for_a_denied_item_is_refused():
+    from doppelgram import brain
+    from doppelgram.models import BotMessage
+    m = BotMessage(id=1, text="1. Смотреть анкеты\n2. Премиум")
+    pick = lambda n: brain.validate_decision({"action": "send", "text": n}, m, max_wait_s=60,  # noqa: E731
+                                             max_send_chars=200, deny=("Премиум",)).action
+    assert pick("1") == "send" and pick("2") == "ask_owner"
