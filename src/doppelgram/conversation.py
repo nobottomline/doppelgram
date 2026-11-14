@@ -105,6 +105,30 @@ def classify_incoming(text: str, media_kind: str | None) -> str | None:
     return None
 
 
+def classify_outgoing(text: str) -> str | None:
+    """What the agent itself wants to write that only the owner may say: meetings, money, explicit topics,
+    contacts, and anything about being a bot (it must never deny it, so it does not discuss it at all)."""
+    for name, rx in (("ai_question", _AI_RE), ("money", _MONEY_RE), ("explicit", _EXPLICIT_RE),
+                     ("meeting", _MEET_RE), ("contact", _CONTACT_RE)):
+        if rx.search(text or ""):
+            return name
+    return None
+
+
+def parse_reply(data) -> tuple[str, list[str], dict]:
+    """The model's JSON as (action, messages, raw); anything malformed is an escalation, never a crash."""
+    if not isinstance(data, dict):
+        return "escalate", [], {"category": "unclear", "reason": "модель вернула не объект"}
+    action = data.get("action")
+    raw = data.get("messages")
+    if isinstance(raw, str):
+        raw = [raw]
+    if action not in ("reply", "wait", "escalate") or not isinstance(raw, (list, type(None))) or any(
+            not isinstance(t, str) for t in raw or []):
+        return "escalate", [], {"category": "unclear", "reason": "модель вернула ответ не по схеме"}
+    return action, [t for t in raw or [] if t.strip()], data
+
+
 def humanize(text: str, *, lowercase: bool) -> str:
     """Make a model message look typed by a person: no em/en dashes, no trailing period, lowercase start."""
     t = text.strip()
@@ -339,6 +363,7 @@ def _read(path: Path) -> str:
 
 
 class ConversationManager:
+    RETRY_S = 300  # a chat whose step failed (network, model, a bug) is tried again after this
     def __init__(self, cfg: ConversationConfig, llm: LLMClient, people: PeopleTransport,
                  store: ConversationStore, notify: Callable[..., Awaitable[int | None]], *,
                  clock: Callable[[], float] = time.time, sleep=asyncio.sleep, rng: random.Random | None = None,
@@ -486,7 +511,15 @@ class ConversationManager:
                     return
             for person in self.store.due(now):
                 async with self.lock:
-                    await self._process(person)
+                    try:
+                        await self._process(person)
+                    except (AccountRestricted, RateLimited):
+                        raise
+                    except Exception as exc:  # one chat must not stop the others: retry it later
+                        level = logging.ERROR if isinstance(exc, (TransportError, LLMError)) else logging.CRITICAL
+                        log.log(level, "chat %s failed, retrying in %ss: %r", person.user_id,
+                                self.RETRY_S, exc, exc_info=level == logging.CRITICAL)
+                        self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
                 if self.stopped:
                     return
         except AccountRestricted as exc:
@@ -550,24 +583,23 @@ class ConversationManager:
         if self.cfg.daily_budget_usd > 0 and self.store.spend_today(now) >= self.cfg.daily_budget_usd:
             self.store.update(person.user_id, due_at=now + 3600)
             return
-        decision = await self._compose(person, history)
+        action, raw_messages, decision = parse_reply(await self._compose(person, history))
         if decision.get("memory"):
             self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 1500))
-        action = decision.get("action")
         if action == "wait":
             self.store.update(person.user_id, handled_upto=upto)
             return
-        messages = [humanize(str(t), lowercase=self.cfg.lowercase)
-                    for t in (decision.get("messages") or []) if str(t).strip()][:3]
+        messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:3]
         messages = [t[:self.cfg.max_message_chars] for t in messages if t]
         if action == "escalate" or not messages:
             category = str(decision.get("category") or "unclear")
             await self._escalate(person, history, upto, category,
                                  str(decision.get("reason") or ESCALATIONS.get(category, "")), messages)
             return
-        if any(_CONTACT_RE.search(t) for t in messages):
-            await self._escalate(person, history, upto, "contact", "агент хотел отправить контакт или ссылку",
-                                 messages)
+        risky = next((c for c in map(classify_outgoing, messages) if c), None)
+        if risky:
+            await self._escalate(person, history, upto, risky,
+                                 f"агент хотел написать то, что решаете вы: {ESCALATIONS.get(risky, risky)}", messages)
             return
         if self.mode == "auto":
             delay = self.rng.uniform(self.cfg.reply_delay_min_s, self.cfg.reply_delay_max_s)
@@ -735,7 +767,7 @@ class ConversationManager:
         now = self.clock()
         if self.store.sends_since(now - 3600) >= self.cfg.max_sends_per_hour:
             return "capped", latest
-        if (first_of_batch and not any(m.outgoing for m in history)
+        if (first_of_batch and not history  # writing first: the person has not written anything yet
                 and self.store.first_messages_since(now - 86400) >= self.cfg.first_messages_per_day):
             # Writing first to strangers is what gets accounts restricted: the daily cap is strict.
             return "capped", latest

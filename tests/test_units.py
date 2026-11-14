@@ -514,3 +514,55 @@ def test_example_choices_are_sanitized_too():
         history=[], recent_actions=[], notes=[], sanitize=clean,
         examples=[{"description": "", "model_choice": "Маша, 23 года", "owner_choice": "Маша, 23 года", "note": ""}])
     assert "23" not in msgs[1]["content"][0]["text"]
+
+
+# ------------------------------------------------------------- open-source review regressions
+def test_the_model_may_type_only_allowed_commands_or_menu_numbers():
+    from doppelgram import brain
+    from doppelgram.models import BotMessage
+    m = BotMessage(id=1, text="Меню")
+    ok = lambda text: brain.validate_decision({"action": "send", "text": text}, m, max_wait_s=60,  # noqa: E731
+                                              max_send_chars=200, allowed_commands=("/start",)).action == "send"
+    assert ok("/start") and ok("2") and ok("12")
+    assert not ok("OWNER_PRIVATE_MARKER") and not ok("/start мой вкус: блондинки") and not ok("/myprofile")
+
+
+def test_session_files_follow_telethon_naming(tmp_path):
+    from doppelgram.cli import _session_files
+    assert _session_files(tmp_path / "account") == [tmp_path / "account.session", tmp_path / "account.session-journal"]
+    assert _session_files(tmp_path / "a.session") == [tmp_path / "a.session", tmp_path / "a.session-journal"]
+
+
+@pytest.mark.parametrize("name", ["aux", "con", "nul", "com1", "lpt9"])
+def test_windows_reserved_bot_names_are_rejected(tmp_path, name):
+    from doppelgram.config import ConfigError, load_config
+    (tmp_path / "config.toml").write_text(f'[[bots]]\nname = "{name}"\nusername = "@x_bot"\n', encoding="utf-8")
+    with pytest.raises(ConfigError, match="reserved"):
+        load_config(tmp_path / "config.toml", require_llm=False, require_telegram=False)
+
+
+def test_exif_rotation_is_applied():
+    import io
+
+    from PIL import Image
+
+    from doppelgram.media import to_jpeg
+    img = Image.new("RGB", (40, 20))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # rotate 90° to display
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif)
+    with Image.open(io.BytesIO(to_jpeg(buf.getvalue()))) as out:
+        assert out.size == (20, 40)
+
+
+def test_malformed_chat_replies_escalate_instead_of_crashing():
+    from doppelgram.conversation import classify_outgoing, parse_reply
+    assert parse_reply({"action": "reply", "messages": 42})[0] == "escalate"
+    assert parse_reply({"action": "reply", "messages": [1, 2]})[0] == "escalate"
+    assert parse_reply({"action": "dance"})[0] == "escalate"
+    assert parse_reply([1])[0] == "escalate"
+    assert parse_reply({"action": "reply", "messages": "привет"})[:2] == ("reply", ["привет"])
+    assert classify_outgoing("приеду завтра в восемь") == "meeting"
+    assert classify_outgoing("я не бот, честно") == "ai_question"
+    assert classify_outgoing("как прошёл день?") is None

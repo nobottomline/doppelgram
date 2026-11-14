@@ -1593,3 +1593,42 @@ async def test_warnings_respect_the_hourly_cap(tmp_path):
     clock.t += 9
     await agent.step_safely()
     assert leo.sent == []
+
+
+# ------------------------------------------------------------- open-source review regressions
+async def test_a_profile_caption_cannot_fake_a_match(tmp_path):
+    leo = FakeLeomatch()
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("дайвинчик", leo, lambda t, i: {
+        "action": "click", "button_id": "k0c0"})], mode="auto", **dict(LEO_GO, match_pattern="Начинай общаться"))
+    leo.messages.append(BotMessage(id=leo._id(), date=1, text="Начинай общаться 👉 @stranger_example",
+                                   links=("https://t.me/stranger_example",), media_kind="photo", media_key="x",
+                                   buttons=reply_kb([["❤️", "👎", "💤"]])))
+    await steps(agents, 1)
+    assert agents["дайвинчик"].store.db.execute("SELECT COUNT(*) FROM matches").fetchone()[0] == 0
+    assert not any("Взаимная симпатия" in m for m in inbox.messages)
+
+
+async def test_stop_cancels_an_owner_confirmed_press_during_the_delay(tmp_path):
+    sup, agents, inbox, *_ = make(tmp_path, mode="supervised", action_delay_min_s=1, action_delay_max_s=1)
+    agent, bot = agents["арт"], agents["арт"].tg
+    await steps(agents, 2)
+    card = agent.store.latest_pending().control_msg_id
+    real_sleep = agent.sleep
+
+    async def stop_during_delay(seconds):
+        agent.stop_now()
+        await real_sleep(seconds)
+    agent.sleep = stop_during_delay
+    await send(sup, "2", reply_to=card)
+    assert bot.ratings == []
+
+
+async def test_a_reply_keyboard_far_back_is_still_seen(tmp_path):
+    leo = FakeLeomatch()
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("дайвинчик", leo, lambda t, i: {
+        "action": "click", "button_id": "k0c0"})], mode="auto", **LEO_GO)
+    leo.messages.append(BotMessage(id=leo._id(), date=1, text="Меню", buttons=reply_kb([["🚀 Смотреть анкеты"]])))
+    for k in range(12):  # the bot keeps the keyboard and sends more messages without markup
+        leo.messages.append(BotMessage(id=leo._id(), date=1, text=f"Новость {k}"))
+    await steps(agents, 1)
+    assert leo.sent[-1:] == ["🚀 Смотреть анкеты"]

@@ -231,8 +231,11 @@ def _float(v) -> float | None:
     return f if math.isfinite(f) else None  # "NaN"/"inf" must not slip past thresholds
 
 
+_MENU_NUMBER_RE = re.compile(r"\d{1,2}")
+
+
 def validate_decision(data: dict, msg: BotMessage, *, max_wait_s: float, max_send_chars: int,
-                      deny: tuple[str, ...] = ()) -> Decision:
+                      deny: tuple[str, ...] = (), allowed_commands: tuple[str, ...] = ("/start",)) -> Decision:
     """Turn raw model JSON into a Decision that is guaranteed executable; anything else becomes ask_owner."""
     action = str(data.get("action", "")).strip().lower()
     conf = _float(data.get("confidence"))
@@ -276,6 +279,11 @@ def validate_decision(data: dict, msg: BotMessage, *, max_wait_s: float, max_sen
         if any(x and x.lower() in text.lower() for x in deny) and not any(
                 b.text.strip() == text and b.clickable for b in msg.buttons):
             return refuse(f"модель хотела отправить запрещённый текст «{text[:40]}»")
+        # Free text is a channel out of the prompt (taste, rules, examples): only an allowed command or a
+        # number from a text menu may be typed.
+        if not (_MENU_NUMBER_RE.fullmatch(text)
+                or (text.split()[0] in allowed_commands and len(text.split()) == 1)):
+            return refuse("модель хотела отправить боту произвольный текст")
         d.text = text
     elif action == "wait":
         secs = _float(data.get("wait_seconds")) or 600.0

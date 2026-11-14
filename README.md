@@ -180,8 +180,9 @@ The system log records actions and confidence only.
 numbers 10–18 removed while `hide_numbers_10_18` is on, the default), your taste and past answers. Everything sent goes under your own API key.
 
 The leading block of `#` lines in `taste.md`, `about-me.md`, `style.md` and the task files is a comment the
-model never sees; headings and hashtags further down are kept. The templates contain only that comment, so
-nothing is assumed about you until you write it.
+model never sees; headings and hashtags further down are kept. The `taste`, `about-me` and `style` templates
+contain only that comment, so nothing is assumed about you until you write it. The task templates and
+`conversation.example.md` hold working instructions for the bots and for chats; they are fine as they are.
 
 ## Quick start (macOS, Linux, Windows)
 

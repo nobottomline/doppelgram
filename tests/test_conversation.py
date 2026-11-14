@@ -725,3 +725,53 @@ async def test_conversation_memory_is_sanitized_in_the_prompt(tmp_path):
     await m.tick()
     notes = m.llm.calls[-1][1]["content"].split("## Your notes about this person")[1].split("##")[0]
     assert "23" not in notes and "18 года" in notes
+
+
+# ------------------------------------------------------------- open-source review regressions
+async def test_with_no_first_messages_the_agent_still_answers(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", first_messages_per_day=0)
+    await match(m)
+    await m.tick()
+    assert people.sent_texts(555) == [] and m.llm.calls == []  # never writes first
+    people.incoming(555, "привет, как дела?")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["привет, всё хорошо"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert people.sent_texts(555) == ["привет, всё хорошо"]
+
+
+async def test_a_failed_chat_step_is_retried(tmp_path):
+    from doppelgram.llm import LLMError
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    await match(m)
+    m.llm.reply = lambda msgs: (_ for _ in ()).throw(LLMError("down"))
+    await m.tick()
+    assert m.store.next_due() is not None
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    clock.t += ConversationManager.RETRY_S + 1
+    await m.tick()
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["привет"]
+
+
+async def test_a_malformed_reply_escalates_and_does_not_crash(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    m.llm.reply = {"action": "reply", "messages": 42}
+    await match(m)
+    await m.tick()
+    assert people.sent_texts(555) == [] and inbox
+
+
+async def test_the_agent_never_proposes_a_meeting_by_itself(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    await match(m)
+    people.incoming(555, "чем занимаешься?")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["приеду завтра в восемь"]}
+    await m.tick()
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == [] and any("встреч" in t.lower() or "решаете вы" in t for t in inbox)

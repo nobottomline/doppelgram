@@ -126,6 +126,8 @@ class BehaviorConfig:
     max_reference_images: int = 6
     max_send_chars: int = 200
     start_command: str = "/start"
+    # Commands the model may type besides start_command (anything else it wants to send goes to the owner).
+    allowed_commands: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -302,6 +304,7 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
 
 _BEHAVIOR_KEYS = {f.name for f in fields(BehaviorConfig)}
 _NAME_RE = re.compile(r"^[\w-]{1,32}$")
+_WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(10)), *(f"LPT{n}" for n in range(10))}
 
 
 def _behavior(base: Path, table: dict, parent: BehaviorConfig | None) -> BehaviorConfig:
@@ -351,6 +354,8 @@ def _targets(base: Path, raw: dict, behavior: BehaviorConfig, data_dir: Path) ->
         bot = str(table.pop("username", "")).strip()
         if not _NAME_RE.match(name):
             raise ConfigError(f"bots[{i}].name must be a short word (letters, digits, _ or -)")
+        if name.split(".")[0].upper() in _WINDOWS_RESERVED:
+            raise ConfigError(f"bots[{i}].name {name!r} is a reserved file name on Windows")
         targets.append(Target(name, bot, _behavior(base, table, behavior), data_dir / f"{name}.sqlite3"))
     legacy = raw.get("target", {})
     if legacy.get("bot"):

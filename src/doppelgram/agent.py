@@ -33,7 +33,6 @@ from .ui import Html, as_html, b, code, count, esc, i, join
 
 log = logging.getLogger(__name__)
 
-MODE_NAMES = {"auto": "авто", "supervised": "учёба"}
 COMPANION_IMAGE_WINDOW_S = 120.0
 MAX_LLM_FAILURE_STREAK = 5
 
@@ -589,7 +588,8 @@ class Agent:
             await self._step()
 
     async def _observe(self) -> Observation | None:
-        return observe(await self.tg.recent_bot_messages(self.b.history_in_prompt + 2),
+        # A reply keyboard stays on screen after the message that set it scrolls away: look far enough back.
+        return observe(await self.tg.recent_bot_messages(max(self.b.history_in_prompt + 2, self.KEYBOARD_LOOKBACK)),
                        tuple(self.b.deny_buttons), tuple(self.b.decline_buttons))
 
     async def _step(self) -> None:
@@ -672,7 +672,7 @@ class Agent:
             taste=self.taste.text() if self.taste else self._read(self.b.taste_file),
             references=self._references(),
             examples=self.store.recent_examples(self.b.examples_in_prompt),
-            history=[m for m in obs.msgs if m.id != current.id],
+            history=[m for m in obs.msgs if m.id != current.id][-self.b.history_in_prompt:],
             recent_actions=self.store.recent_actions(5), current=current,
             sanitize=self._sanitize if (self.b.age_in_prompt != "keep" or self.b.hide_numbers_10_18) else None,
             image_url=image_url, image_from_previous=obs.image_from_previous, notes=self.notes,
@@ -721,7 +721,8 @@ class Agent:
         self.store.log_llm(self.clock(), result.model, result.prompt_tokens, result.completion_tokens,
                            result.cost_usd, ok=True)
         decision = brain.validate_decision(result.data, current, max_wait_s=self.b.max_wait_s,
-                                           max_send_chars=self.b.max_send_chars, deny=tuple(self.b.deny_buttons))
+                                           max_send_chars=self.b.max_send_chars, deny=tuple(self.b.deny_buttons),
+                                           allowed_commands=self._allowed_commands())
         # No explanation in the system log: it may describe a person.
         log.info("decision for #%s: %s %s conf=%s", current.id, decision.action,
                  decision.button_id or decision.wait_seconds or "", decision.confidence)
@@ -747,7 +748,9 @@ class Agent:
         return out
 
     async def _record_match(self, msg: BotMessage, now: float) -> None:
-        if not self.b.match_pattern or not re.search(self.b.match_pattern, msg.text or ""):
+        # The bot's notice is a text message; a caption on a picture is a profile someone wrote, and its
+        # "Начинай общаться 👉 @someone" must never make a stranger a match.
+        if not self.b.match_pattern or msg.media_kind or not re.search(self.b.match_pattern, msg.text or ""):
             return
         if self.store.add_match(now, msg.id, msg.text, list(msg.links), list(msg.mention_ids)):
             contact = ", ".join(msg.links) or ("профиль по ссылке в сообщении бота" if msg.mention_ids else "")
@@ -758,6 +761,10 @@ class Agent:
                 # The card is stored as is; the conversation module sanitizes it when it builds a prompt.
                 await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card,
                                     self._card_age(card) if card else None)
+
+    def _allowed_commands(self) -> tuple[str, ...]:
+        start = self.b.start_command.split()[:1]
+        return tuple(dict.fromkeys([*start, *self.b.allowed_commands]))
 
     def _sanitize(self, text: str) -> str:
         return brain.sanitize_text(text, self.b.age_in_prompt, self.b.age_pattern, self.b.hide_numbers_10_18)
@@ -826,6 +833,7 @@ class Agent:
         self.store.mark(obs.current.id, obs.rev, "waiting", now, retry_after=now + self.KEYBOARD_WAIT_S)
         return True
 
+    KEYBOARD_LOOKBACK = 40  # messages read to find the reply keyboard still shown
     CONTINUES_PER_HOUR = 12
     SHORT_WAIT_S = 120
 
@@ -1080,7 +1088,9 @@ class Agent:
         if self.restricted:
             log.info("account restricted during the pre-action delay; not acting on #%s", msg.id)
             return False
-        if epoch is not None and (epoch != self.epoch or not self.active()):
+        # The owner's own answer is not bound to working hours or the norm, but /stop or /pause cancels it.
+        allowed = (self.running and not self.restricted) if decided_by == "owner" else self.active()
+        if epoch is not None and (epoch != self.epoch or not allowed):
             log.info("owner changed state during the pre-action delay; not acting on #%s", msg.id)
             self.wake.set()
             return False
@@ -1459,7 +1469,7 @@ class Agent:
                          confidence=1.0)
             # Consume the card before acting, so a failure can never lead to a second press.
             self.store.delete_pending(pending.control_msg_id)
-            ok = await self._execute(fresh, d, decided_by="owner")
+            ok = await self._execute(fresh, d, decided_by="owner", epoch=self.epoch)
             if not ok:
                 self.store.unmark(pending.bot_msg_id, pending.revision)
                 await self.say("Не получилось нажать: анкета сменилась во время ожидания.")

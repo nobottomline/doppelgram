@@ -130,6 +130,7 @@ daily_budget_usd = 1.0       # per bot
 report_every_h = 6           # periodic status message to the owner (0 = off)
 supervise_images_only = true
 start_command = "/start"     # sent once if the chat with the bot is empty
+allowed_commands = []        # other commands the model may type; any other text it wants to send comes to you
 
 # Chats with matched people (Leomatch gives a link to the person's Telegram after a mutual like).
 # Off by default. In "approve" mode every message waits for your "ок"; in "auto" the agent writes itself

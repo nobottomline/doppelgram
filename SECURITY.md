@@ -14,7 +14,8 @@ keys or stored data, makes the agent pay, send contacts or personal data, or byp
 
 ## Keeping your installation safe
 
-* The `*.session` file is a login to your account. Keep it, `.env` and `data/` readable only by you
-  (`chmod 600`, the installer does this on Linux), and never commit or share them.
+* The `*.session` file is a login to your account. Keep it and `.env` readable only by you (`chmod 600`)
+  and the `data/` folder accessible only to you (`chmod 700`); the Linux installer does both. Never commit or
+  share them.
 * Restrict `owner.user_ids` to your own other account. Commands from anyone else are ignored.
 * If a session may have leaked, end it in Telegram → Settings → Devices and log in again.

@@ -23,9 +23,15 @@ def _setup_logging(verbose: bool) -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+def _session_files(session: Path) -> list[Path]:
+    """Telethon adds ".session" unless the name already ends with it; the journal sits next to it."""
+    base = str(session)
+    main = base if base.endswith(".session") else base + ".session"
+    return [Path(main), Path(main + "-journal")]
+
+
 def _secure_session(cfg) -> None:
-    for suffix in (".session", ".session-journal"):
-        p = Path(str(cfg.telegram.session) + suffix)
+    for p in _session_files(cfg.telegram.session):
         if p.exists():
             os.chmod(p, 0o600)
 
@@ -200,19 +206,23 @@ async def cmd_test_llm(cfg, args) -> int:
     examples = []
     if target and target.db_path.exists():
         examples = Store(target.db_path).recent_examples(behavior.examples_in_prompt)
+    from .storage import read_user_text  # the same reading as the agent: template comments dropped
     from .taste import TasteProfile
 
-    read = lambda p: p.read_text(encoding="utf-8") if p.is_file() else ""  # noqa: E731
     references = []
-    taste_text = read(behavior.taste_file)
+    taste_text = read_user_text(behavior.taste_file)
     if cfg.data_dir.is_dir():
         profile = TasteProfile(behavior.taste_profile, cfg.data_dir, behavior.taste_file)
         taste_text = profile.text()
         references = [(r.liked, r.note, image_data_url(r.path.read_bytes(), 768))
                       for r in profile.prompt_references(behavior.max_reference_images)]
+    def sanitize(text: str) -> str:  # the same privacy settings as the running agent
+        return brain.sanitize_text(text, behavior.age_in_prompt, behavior.age_pattern, behavior.hide_numbers_10_18)
+
     messages = brain.build_messages(
-        task=read(behavior.task_file), taste=taste_text, examples=examples, references=references,
+        task=read_user_text(behavior.task_file), taste=taste_text, examples=examples, references=references,
         history=[], recent_actions=[], current=msg,
+        sanitize=sanitize if (behavior.age_in_prompt != "keep" or behavior.hide_numbers_10_18) else None,
         image_url=image_data_url(Path(args.image).read_bytes(), cfg.llm.image_max_side),
         image_from_previous=False, notes=[])
     llm = LLMClient(cfg.llm)
@@ -221,7 +231,9 @@ async def cmd_test_llm(cfg, args) -> int:
     finally:
         await llm.aclose()
     d = brain.validate_decision(result.data, msg, max_wait_s=behavior.max_wait_s,
-                                max_send_chars=behavior.max_send_chars)
+                                max_send_chars=behavior.max_send_chars, deny=tuple(behavior.deny_buttons),
+                                allowed_commands=tuple(dict.fromkeys([*behavior.start_command.split()[:1],
+                                                                      *behavior.allowed_commands])))
     chosen = msg.button(d.button_id or "")
     print(json.dumps({
         "model": result.model, "action": d.action, "button": chosen.text if chosen else None,

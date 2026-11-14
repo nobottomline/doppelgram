@@ -5,13 +5,14 @@ from __future__ import annotations
 import base64
 import io
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 def to_jpeg(raw: bytes, max_side: int = 1536, quality: int = 90) -> bytes:
     """Any Telegram image (jpeg/png/webp, with or without alpha) -> bounded RGB JPEG."""
-    with Image.open(io.BytesIO(raw)) as img:
-        img.load()
+    with Image.open(io.BytesIO(raw)) as original:
+        original.load()
+        img = ImageOps.exif_transpose(original)  # phone photos: apply the EXIF rotation before it is dropped
         if img.mode in ("RGBA", "LA", "P"):
             rgba = img.convert("RGBA")
             out = Image.new("RGB", rgba.size, (255, 255, 255))

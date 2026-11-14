@@ -12,9 +12,6 @@ from dataclasses import dataclass
 from .settings import MODES
 from .ui import Html, b, code, esc, join
 
-# Kept for compatibility; the agent no longer prefixes its messages.
-AGENT_PREFIX = ""
-
 _ALIASES = {
     "start": {"start", "старт", "запуск"},
     "stop": {"stop", "стоп"},
