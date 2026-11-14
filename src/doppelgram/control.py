@@ -112,6 +112,12 @@ def parse_command(text: str) -> Command:
     if name in ("lead", "self"):
         return Command(name, int(rest)) if rest.isdigit() else Command("unknown", text)
     if name == "chat_mode":
+        words = rest.lower().split()
+        if len(words) == 2 and words[0] in ("первым", "first"):
+            onoff = {"вкл": "on", "on": "on", "выкл": "off", "off": "off"}.get(words[1])
+            return Command("chat_mode", f"first:{onoff}") if onoff else Command("unknown", text)
+        if len(words) == 2 and words[0] in ("порог", "threshold") and words[1].isdigit() and 1 <= int(words[1]) <= 10:
+            return Command("chat_mode", f"min:{int(words[1])}")
         arg = {"вкл": "on", "on": "on", "выкл": "off", "off": "off", "авто": "auto", "auto": "auto",
                "подтверждение": "approve", "approve": "approve", "черновики": "approve"}.get(rest.lower())
         return Command("chat_mode", arg) if arg else Command("unknown", text)
@@ -182,7 +188,8 @@ def help_text(bots: list[str]) -> Html:
              f"{code('/delete правило 3')} · {code('/delete фото 5')}"),
         "",
         b("Переписка с мэтчами"),
-        Html(f"{code('/chat вкл | выкл | подтверждение | авто')} · {code('/dialogs')} · "
+        Html(f"{code('/chat вкл | выкл | подтверждение | авто')} · {code('/chat первым вкл | выкл')} · "
+             f"{code('/chat порог 9')} · {code('/dialogs')} · "
              f"{code('/lead 123')} · {code('/self 123')}"),
         "",
         Html(f"Обычный текст без «/» агент не читает — можно писать заметки. Команда для одного бота: "

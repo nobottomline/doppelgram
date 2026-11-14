@@ -204,7 +204,7 @@ def test_example_config_loads(tmp_path, monkeypatch):
     assert re.search(bib.behavior.incoming_rating_pattern, "⭐️ Кто-то из вашего города, оценил вас, на 10 баллов 😮",
                      re.I).group(1) == "10"
     assert bib.behavior.incoming_open_buttons == ["Посмотреть"] and "Отключить" in bib.behavior.deny_buttons
-    assert cfg.conversations.first_messages_per_day == 0
+    assert cfg.conversations.write_first is False and cfg.conversations.write_first_min_score == 9
     likes = bib
     conv = cfg.conversations
     assert conv is not None and not conv.enabled and conv.mode == "approve" and not conv.auto_allowed

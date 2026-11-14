@@ -66,3 +66,4 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 # Prompt texts: one paragraph per line reads better than wrapped fragments.
 "src/doppelgram/brain.py" = ["E501"]
 "src/doppelgram/conversation.py" = ["E501"]
+"src/doppelgram/simulate.py" = ["E501"]

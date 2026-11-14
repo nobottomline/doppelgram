@@ -141,7 +141,11 @@ class ConversationConfig:
     mode: str = "approve"  # approve | auto
     owner_age: int = 0  # 0 < owner_age < 18 disables auto mode: drafts with approval only
     min_match_age: int = 18
-    first_messages_per_day: int = 0  # 0: never write first, wait for the match to write
+    # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
+    # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
+    write_first: bool = False
+    write_first_min_score: int = 9
+    first_messages_per_day: int = 3
     max_sends_per_hour: int = 20
     settle_s: float = 25.0  # wait for a burst of incoming messages before answering
     reply_delay_min_s: float = 45.0
@@ -284,6 +288,9 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
     if unknown:
         raise ConfigError(f"unknown conversations option(s): {', '.join(sorted(unknown))}")
     values = dict(table)
+    if "write_first" not in values and "first_messages_per_day" in values:
+        # Before write_first existed, a positive daily number meant "write first".
+        values["write_first"] = int(values["first_messages_per_day"]) > 0
     for key, default in (("about_file", "about-me.md"), ("goal_file", "conversation.md"),
                          ("style_file", "style.md")):
         values[key] = _path(base, values.get(key, default))
@@ -292,6 +299,10 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
         raise ConfigError("conversations.mode must be 'approve' or 'auto'")
     if cfg.quiet_hours and not re.fullmatch(r"\d{1,2}:\d{2}-\d{1,2}:\d{2}", cfg.quiet_hours):
         raise ConfigError("conversations.quiet_hours must look like '01:00-09:00'")
+    if not 1 <= cfg.write_first_min_score <= 10:
+        raise ConfigError("conversations.write_first_min_score must be 1-10")
+    if cfg.write_first and cfg.first_messages_per_day < 1:
+        raise ConfigError("conversations.write_first needs first_messages_per_day of at least 1")
     if cfg.reply_delay_max_s < cfg.reply_delay_min_s:
         raise ConfigError("reply_delay_max_s must be >= reply_delay_min_s")
     try:

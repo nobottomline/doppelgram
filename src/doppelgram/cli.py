@@ -243,6 +243,23 @@ async def cmd_test_llm(cfg, args) -> int:
     return 0
 
 
+async def cmd_test_chat(cfg, args) -> int:
+    from .llm import LLMClient
+    from .simulate import DEFAULT_PERSONA, simulate
+
+    if cfg.conversations is None:
+        print("no [conversations] section in the config", file=sys.stderr)
+        return 2
+    llm = LLMClient(cfg.llm)
+    try:
+        print(f"Симуляция: {args.card}\n")
+        await simulate(cfg.conversations, llm, card=args.card, persona=args.persona or DEFAULT_PERSONA,
+                       turns=args.turns, agent_first=args.agent_first)
+    finally:
+        await llm.aclose()
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="doppelgram", description=__doc__)
     p.add_argument("-c", "--config", default="config.toml", type=Path)
@@ -258,6 +275,12 @@ def main(argv: list[str] | None = None) -> int:
     tl.add_argument("--buttons", default="1,2,3,4,5,6,7,8,9,10")
     tl.add_argument("--text", default="Оцените рисунок")
     tl.add_argument("--bot", default=None, help="use this bot's task/taste files (default: the first bot)")
+    tc = sub.add_parser("test-chat", help="let the conversation agent talk to a simulated match (no Telegram)")
+    tc.add_argument("--card", default="Аня, 24, Москва – дизайнер, люблю горы, кофе и долгие прогулки",
+                    help="the match's dating profile")
+    tc.add_argument("--persona", default=None, help="who the simulated match is and how they behave")
+    tc.add_argument("--turns", type=int, default=8)
+    tc.add_argument("--agent-first", action="store_true", help="the agent writes the first message")
     args = p.parse_args(argv)
 
     _setup_logging(args.verbose)
@@ -268,7 +291,8 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as exc:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
-    handler = {"login": cmd_login, "run": cmd_run, "resolve": cmd_resolve, "test-llm": cmd_test_llm}[args.cmd]
+    handler = {"login": cmd_login, "run": cmd_run, "resolve": cmd_resolve, "test-llm": cmd_test_llm,
+               "test-chat": cmd_test_chat}[args.cmd]
     try:
         return asyncio.run(handler(cfg, args))
     except ConfigError as exc:

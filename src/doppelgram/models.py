@@ -91,6 +91,7 @@ class Decision:
     wait_seconds: float | None = None
     reason: str = ""
     confidence: float | None = None
+    score: int | None = None       # 1-10: how much the owner would like this profile (decides writing first)
     description: str = ""          # free text for the owner's card only; never stored
     traits: dict = field(default_factory=dict)  # fixed-vocabulary visual traits; what examples keep
     raw: dict = field(default_factory=dict)

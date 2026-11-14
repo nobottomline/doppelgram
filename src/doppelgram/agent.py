@@ -199,7 +199,8 @@ class Agent:
         self.name = name or label or "bot"
         # (bot, links, mention ids, card text, age) -> conversation manager, set by the supervisor
         self.on_match: Callable[..., Awaitable[None]] | None = None
-        self._recent_cards: list[str] = []  # texts of recently decided picture cards (to attach to a match)
+        # Recently decided picture cards (text, taste score), to attach to a match. In memory only.
+        self._recent_cards: list[tuple[str, int | None]] = []
         self._breaker_reason: str | None = None
         self.tg = transport
         self.llm = llm
@@ -754,13 +755,14 @@ class Agent:
             return
         if self.store.add_match(now, msg.id, msg.text, list(msg.links), list(msg.mention_ids)):
             contact = ", ".join(msg.links) or ("профиль по ссылке в сообщении бота" if msg.mention_ids else "")
-            card = self._card_for_match(msg.text)
+            card, score = self._card_for_match(msg.text)
             await self.say(f"💞 Взаимная симпатия! {contact}\n{msg.text[:300]}"
-                           + (f"\nАнкета: {card[:300]}" if card else ""))
+                           + (f"\nАнкета: {card[:300]}" if card else "")
+                           + (f"\nОценка агента: {score}/10" if score is not None else ""))
             if self.on_match is not None:
                 # The card is stored as is; the conversation module sanitizes it when it builds a prompt.
                 await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card,
-                                    self._card_age(card) if card else None)
+                                    self._card_age(card) if card else None, score)
 
     def _allowed_commands(self) -> tuple[str, ...]:
         start = self.b.start_command.split()[:1]
@@ -769,13 +771,13 @@ class Agent:
     def _sanitize(self, text: str) -> str:
         return brain.sanitize_text(text, self.b.age_in_prompt, self.b.age_pattern, self.b.hide_numbers_10_18)
 
-    def _card_for_match(self, notice: str) -> str:
-        """The profile card of the matched person, by the name in the notice ('… 👉 Маша')."""
+    def _card_for_match(self, notice: str) -> tuple[str, int | None]:
+        """The profile card of the matched person and its taste score, by the name in the notice ('… 👉 Маша')."""
         name = notice.rsplit("👉", 1)[-1].strip() if "👉" in notice else ""
-        for card in reversed(self._recent_cards):
+        for card, score in reversed(self._recent_cards):
             if name and card.startswith(name):
-                return card
-        return ""
+                return card, score
+        return "", None
 
     def _card_age(self, text: str) -> int | None:
         if not self.b.age_pattern:
@@ -1147,7 +1149,9 @@ class Agent:
                 # A hash is enough to recognise the same caption later; the profile text is not kept.
                 self.store.set(self._acted_key(obs), _digest(obs.image_msg.text))
                 if msg.text:
-                    self._recent_cards = [*self._recent_cards, msg.text][-100:]
+                    # A 1-10 rating button is the score itself (Bibinto); otherwise the model's estimate.
+                    score = int(button.text) if rated and brain.is_rating_label(button.text) else d.score
+                    self._recent_cards = [*self._recent_cards, (msg.text, score if rated else None)][-100:]
             return True
 
         if d.action == "send":

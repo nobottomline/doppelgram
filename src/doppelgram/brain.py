@@ -125,10 +125,15 @@ Answer with ONE JSON object only, no prose:
  "text": "<message, for send>",
  "wait_seconds": <number, for wait>,
  "confidence": <0.0-1.0>,
+ "score": <only for a person's profile card: 1-10, how much the owner would like this person by their taste and past decisions; omit otherwise>,
  "reason": "<short justification in Russian>"}"""
 
 
 _RATING_LABEL_RE = re.compile(r"^\s*(?:10|[1-9])\s*$")  # the 1-10 rating scale, nothing else
+
+
+def is_rating_label(text: str) -> bool:
+    return bool(_RATING_LABEL_RE.match(text or ""))
 
 
 def _clean_msg(msg: BotMessage, clean) -> BotMessage:
@@ -240,6 +245,11 @@ def menu_lines(text: str | None) -> dict[str, str]:
     return {m.group(1): m.group(2) for m in _MENU_LINE_RE.finditer(text or "")}
 
 
+def _score(value) -> int | None:
+    v = _float(value)
+    return round(v) if v is not None and 1 <= v <= 10 else None
+
+
 def validate_decision(data: dict, msg: BotMessage, *, max_wait_s: float, max_send_chars: int,
                       deny: tuple[str, ...] = (), allowed_commands: tuple[str, ...] = ("/start",)) -> Decision:
     """Turn raw model JSON into a Decision that is guaranteed executable; anything else becomes ask_owner."""
@@ -249,6 +259,7 @@ def validate_decision(data: dict, msg: BotMessage, *, max_wait_s: float, max_sen
         action=action,
         reason=str(data.get("reason", ""))[:500],
         confidence=min(max(conf, 0.0), 1.0) if conf is not None else None,
+        score=_score(data.get("score")),
         description=str(data.get("description", ""))[:600],
         traits=clean_traits(data.get("traits")),
         raw=data,

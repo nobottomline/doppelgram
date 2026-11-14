@@ -125,6 +125,21 @@ what not to mention), toward the goal in `conversation.md`, in the style of `sty
 you wrote yourself in reply to a draft. Output is post-processed to read like a person typing (lowercase,
 no em dashes, no trailing periods).
 
+**Who it writes to.** By default the agent never writes first: it answers only people who wrote to you.
+With `write_first = true` (`/chat первым вкл`) it also opens the chat, but only with matches it rated at
+least `write_first_min_score` (default 9 of 10, `/chat порог 8`) and at most `first_messages_per_day` a day.
+The score is the agent's taste estimate made when it liked the profile (in Бибинто the rating it gave).
+
+**How it talks.** Short messages in your style, reacting to what the person said before asking anything, a
+balance of questions and things about you, threads picked up from their profile and earlier messages, a new
+topic instead of chasing dry answers. It moves the chat toward the goal in `conversation.md` stage by stage;
+when the chat is warm enough, or the person suggests it, the meeting proposal comes to you as a draft, and
+you send it with «ок».
+
+**Try it offline first.** `doppelgram -c config.toml test-chat` lets the real agent (your files, prompt and
+guards) talk to a model playing a match, without Telegram. Options: `--card` (their profile), `--persona`
+(how they behave, e.g. "отвечает сухо"), `--agent-first`, `--turns`.
+
 These rules hold in every mode:
 
 * **Facts only from your profile.** Embellishment only where you explicitly allowed it; nothing invented.
@@ -135,9 +150,9 @@ These rules hold in every mode:
 * **Age.** No chats with matches younger than `min_match_age` (default 18). If `owner_age` is under 18, auto
   mode is unavailable and every message needs your approval.
 * **You can always take over.** If you write to the person yourself, the agent steps back from that chat.
-* **Account safety.** At most `first_messages_per_day` new conversations a day (writing first to strangers is
-  the main cause of `PEER_FLOOD` restrictions), an hourly send cap, quiet hours and human-like delays with a
-  typing indicator.
+* **Account safety.** Writing first is off by default and capped by `first_messages_per_day` when on (writing
+  first to strangers is the main cause of `PEER_FLOOD` restrictions); an hourly send cap, quiet hours and
+  human-like delays with a typing indicator.
 
 ## What is stored
 

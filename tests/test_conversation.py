@@ -74,7 +74,7 @@ def make(tmp_path: Path, **over):
     (tmp_path / "about-me.md").write_text("23 года, москва. машины нет (можно сказать: скоро будет)", encoding="utf-8")
     cfg = ConversationConfig(about_file=tmp_path / "about-me.md", goal_file=tmp_path / "goal.md",
                              style_file=tmp_path / "style.md", enabled=True, settle_s=10, first_messages_per_day=3,
-                             reply_delay_min_s=30, reply_delay_max_s=30)
+                             write_first=True, reply_delay_min_s=30, reply_delay_max_s=30)
     cfg = replace(cfg, **over)
     clock = Clock()
     people = FakePeople()
@@ -89,8 +89,8 @@ def make(tmp_path: Path, **over):
     return m, people, inbox, clock
 
 
-async def match(m, age=None):
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – люблю горы", age)
+async def match(m, age=None, score=10):
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – люблю горы", age, score)
 
 
 def last_card(inbox) -> int:
@@ -249,8 +249,8 @@ async def test_first_message_cap(tmp_path):
         return PersonRef(int(links[0]), None, f"p{links[0]}")
 
     people.resolve = resolve
-    await m.on_match("дайвинчик", ["1"], [], "", None)
-    await m.on_match("дайвинчик", ["2"], [], "", None)
+    await m.on_match("дайвинчик", ["1"], [], "", None, 10)
+    await m.on_match("дайвинчик", ["2"], [], "", None, 10)
     await m.tick()
     clock.t += 31
     await m.tick()
@@ -298,6 +298,7 @@ async def test_end_to_end_match_from_leomatch_to_owner_approved_message(tmp_path
         await agent.step_safely()
     person = m.store.person(555)
     assert person is not None and person.card.startswith("Маша, Москва")  # attached, without the age
+    assert person.score == 9  # the model's taste score of the liked card travels with the match
     await m.tick()
     draft_card = last_card(inbox)
     assert "Черновик" in inbox[-1]
@@ -705,7 +706,7 @@ async def test_restored_card_keeps_the_owner_text(tmp_path, failure):
 
 async def test_match_profile_is_stored_without_age_and_age_is_never_stored(tmp_path):
     m, people, inbox, clock = make(tmp_path)
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – рост 170", 23)
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 23, Москва – рост 170", 23, 10)
     person = m.store.person(555)
     assert person.age is None and not any(ch.isdigit() for ch in person.card)
     raw = m.store.db.execute("SELECT card, age FROM people").fetchall()
@@ -729,7 +730,7 @@ async def test_conversation_memory_is_sanitized_in_the_prompt(tmp_path):
 
 # ------------------------------------------------------------- open-source review regressions
 async def test_with_no_first_messages_the_agent_still_answers(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", first_messages_per_day=0)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     await m.tick()
     assert people.sent_texts(555) == [] and m.llm.calls == []  # never writes first
@@ -822,3 +823,120 @@ async def test_a_failed_escalation_does_not_undo_the_owner_taking_over(tmp_path)
     clock.t += 11
     await m.tick()
     assert m.store.person(555).state == "owner"
+
+
+# ------------------------------------------------------------- writing first
+async def test_by_default_the_agent_only_answers(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m, score=10)
+    await m.tick()
+    assert m.llm.calls == [] and not any("Черновик" in t for t in inbox)
+    people.incoming(555, "привет) ты в горы часто ездишь?")
+    m.on_message(555)
+    clock.t += 11
+    await m.tick()
+    assert "Черновик" in inbox[-1]
+
+
+@pytest.mark.parametrize("score, drafted", [(None, False), (8, False), (9, True), (10, True)])
+async def test_writing_first_only_to_high_scores(tmp_path, score, drafted):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=True, write_first_min_score=9)
+    await match(m, score=score)
+    await m.tick()
+    assert any("Черновик" in t for t in inbox) is drafted
+
+
+async def test_writing_first_is_controlled_from_telegram(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await m.command("chat_mode", "first:on")
+    await m.command("chat_mode", "min:8")
+    assert "от 8/10" in inbox[-1]
+    await match(m, score=8)
+    await m.tick()
+    assert "Черновик" in inbox[-1]
+
+
+async def test_a_queued_first_message_is_dropped_when_writing_first_is_switched_off(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True)
+    await match(m, score=10)
+    await m.tick()  # queued for 30 s
+    m.store.set("write_first", "0")
+    clock.t += 31
+    await m.tick()
+    clock.t += 3600
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+def test_write_first_config_and_legacy(tmp_path):
+    from doppelgram.config import ConfigError, load_config
+    cases = {"first_messages_per_day = 2": True, "first_messages_per_day = 0": False, "": False,
+             "write_first = true\nfirst_messages_per_day = 1": True}
+    for body, expected in cases.items():
+        (tmp_path / "config.toml").write_text(f"[conversations]\n{body}\n", encoding="utf-8")
+        assert load_config(tmp_path / "config.toml", require_llm=False,
+                           require_telegram=False).conversations.write_first is expected, body
+    (tmp_path / "config.toml").write_text("[conversations]\nwrite_first = true\nfirst_messages_per_day = 0\n",
+                                          encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(tmp_path / "config.toml", require_llm=False, require_telegram=False)
+
+
+def test_chat_first_commands_parse():
+    from doppelgram.control import parse_owner
+    assert parse_owner("/chat первым вкл").arg == "first:on"
+    assert parse_owner("/chat первым выкл").arg == "first:off"
+    assert parse_owner("/chat порог 8").arg == "min:8"
+    assert parse_owner("/chat порог 11").name == "unknown"
+
+
+def test_engagement_summary_flags_dry_replies():
+    from doppelgram.conversation import _engagement
+    h = [ChatMessage(1, True, "привет, что смотришь?", 0), ChatMessage(2, False, "ничего", 0),
+         ChatMessage(3, True, "а что учишь?", 0), ChatMessage(4, False, "психологию", 0)]
+    assert "short" in _engagement(h) and "0 question" in _engagement(h)
+    assert _engagement([]) == "They have not written yet."
+
+
+async def test_the_prompt_has_time_engagement_and_goal(tmp_path):
+    m, people, inbox, clock = make(tmp_path, write_first=False)
+    (tmp_path / "goal.md").write_text("# комментарий\nЦель: дойти до встречи", encoding="utf-8")
+    await match(m)
+    people.incoming(555, "привет")
+    m.on_message(555)
+    clock.t += 11
+    await m.tick()
+    prompt = m.llm.calls[-1][1]["content"]
+    assert "## Now" in prompt and "short" in prompt and "Цель: дойти до встречи" in prompt
+    assert "комментарий" not in prompt
+
+
+async def test_a_meeting_offer_from_the_person_comes_with_a_draft(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "может встретимся на выходных?")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["давай, в субботу на кофе?"]}
+    clock.t += 11
+    await m.tick()
+    assert people.sent_texts(555) == [] and "Черновик агента" in inbox[-1] and "в субботу на кофе" in inbox[-1]
+
+
+async def test_simulation_runs_offline_with_fake_models(tmp_path):
+    from doppelgram.simulate import simulate
+    m, people, inbox, clock = make(tmp_path)
+    calls = {"n": 0}
+
+    class Both:
+        async def complete_json(self, messages, failures=None):
+            calls["n"] += 1
+            if "You play a real person" in messages[0]["content"]:
+                data = {"messages": ["привет) как дела?"]}
+            else:
+                data = {"action": "reply", "messages": ["привет, нормально) ты как?"]}
+            return LLMResult(data=data, model="m", prompt_tokens=1, completion_tokens=1, cost_usd=0)
+    lines: list[str] = []
+    await simulate(m.cfg, Both(), card="Аня, 24, Москва", persona="тест", turns=2, agent_first=False,
+                   out=lines.append)
+    assert any("вы (агент): привет, нормально) ты как?" in x for x in lines)
+    assert any("Аня: привет) как дела?" in x for x in lines)

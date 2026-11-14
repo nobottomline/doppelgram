@@ -37,7 +37,7 @@ def leo_decide(text, has_image):
         return {"action": "ask_owner", "reason": "?"}
     like = "Маша" in text.split("## Current bot message")[1]
     return {"action": "click", "button_id": "k0c0" if like else "k0c2", "confidence": 0.9,
-            "description": "девушка в горах"}
+            "score": 9 if like else 3, "description": "девушка в горах"}
 
 
 def build(tmp_path, bot, decide, behavior, mode="auto", taste=None):

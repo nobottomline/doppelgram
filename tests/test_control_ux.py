@@ -590,7 +590,7 @@ def test_task_templates_have_no_minor_rule_and_first_messages_are_off_by_default
     for name in ("task-leomatch.example.md", "task-bibinto.example.md"):
         assert "несовершеннолет" not in (root / name).read_text(encoding="utf-8")
     defaults = ConversationConfig(about_file=Path("a"), goal_file=Path("g"), style_file=Path("s"))
-    assert defaults.first_messages_per_day == 0
+    assert defaults.write_first is False
 
 
 async def test_reciprocal_raise_applies_only_to_the_profile_opened_after_the_press(tmp_path):
@@ -1660,3 +1660,28 @@ async def test_an_owner_answer_after_working_hours_still_presses(tmp_path):
     agent.b = replace(agent.b, active_hours="01:00-01:01")  # now outside working hours
     await send(sup, "2", reply_to=card)
     assert bot.ratings == ["2"]
+
+
+async def test_a_digit_rating_is_the_score_passed_with_a_match(tmp_path):
+    leo = FakeLeomatch()
+
+    async def silent(text):
+        leo.sent.append(text)
+    leo.send_to_bot = silent
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("бибинто", leo, lambda t, i: {
+        "action": "click", "button_id": "k0c6", "score": 3})], mode="auto",
+        **dict(LEO_DIGITS, match_pattern="Начинай общаться"))
+    agent = agents["бибинто"]
+    got = []
+
+    async def on_match(*args):
+        got.append(args)
+    agent.on_match = on_match
+    leo.messages.append(BotMessage(id=leo._id(), date=1, text="Аня, Москва", media_kind="photo", media_key="a",
+                                   buttons=reply_kb([[str(n) for n in range(1, 11)]])))
+    await agent.step_safely()
+    assert leo.sent == ["7"]
+    leo.messages.append(BotMessage(id=leo._id(), date=2, text="Начинай общаться 👉 Аня",
+                                   links=("https://t.me/anya_example",)))
+    await agent.step_safely()
+    assert got and got[0][-1] == 7  # the pressed rating, not the model's separate estimate
