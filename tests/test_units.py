@@ -207,7 +207,7 @@ def test_example_config_loads(tmp_path, monkeypatch):
     assert cfg.conversations.write_first is False and cfg.conversations.write_first_min_score == 9
     likes = bib
     conv = cfg.conversations
-    assert conv is not None and not conv.enabled and conv.mode == "approve" and not conv.auto_allowed
+    assert conv is not None and not conv.enabled and conv.mode == "approve"
     assert conv.about_file.name == "about-me.md" and conv.timezone == "Europe/Moscow"
     assert likes.behavior.daily_budget_usd == cfg.behavior.daily_budget_usd
     assert cfg.telegram.session == (tmp_path / "data" / "account").resolve()
@@ -575,3 +575,10 @@ def test_a_menu_number_for_a_denied_item_is_refused():
     pick = lambda n: brain.validate_decision({"action": "send", "text": n}, m, max_wait_s=60,  # noqa: E731
                                              max_send_chars=200, deny=("Премиум",)).action
     assert pick("1") == "send" and pick("2") == "ask_owner"
+
+
+def test_the_removed_owner_age_option_is_ignored_in_old_configs(tmp_path):
+    from doppelgram.config import load_config
+    (tmp_path / "config.toml").write_text('[conversations]\nowner_age = 17\nmode = "auto"\n', encoding="utf-8")
+    conv = load_config(tmp_path / "config.toml", require_llm=False, require_telegram=False).conversations
+    assert conv.mode == "auto" and not hasattr(conv, "owner_age")

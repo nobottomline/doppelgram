@@ -6,7 +6,7 @@ Safety model (kept even in auto mode):
 - "Are you a bot/AI?", meetings, money, contacts, explicit content, minors, media and anything unclear
   are escalated to the owner; the agent never answers those itself.
 - If the owner writes to the person themselves, the agent steps back from that chat.
-- In approve mode (default, and always when the owner is under 18) every message needs the owner's OK.
+- In approve mode (the default) every message needs the owner's OK.
 """
 
 from __future__ import annotations
@@ -429,10 +429,7 @@ class ConversationManager:
 
     @property
     def mode(self) -> str:
-        mode = self.store.get("mode", self.cfg.mode) or self.cfg.mode
-        if mode == "auto" and 0 < self.cfg.owner_age < 18:
-            return "approve"
-        return mode
+        return self.store.get("mode", self.cfg.mode) or self.cfg.mode
 
     @property
     def stopped(self) -> bool:
@@ -1018,8 +1015,5 @@ class ConversationManager:
                 self.store.set("enabled", "1" if arg == "on" else "0")
                 await self.say(f"Переписка {'включена' if arg == 'on' else 'выключена'}.")
             else:
-                if arg == "auto" and 0 < self.cfg.owner_age < 18:
-                    await self.say("Авто-режим недоступен: по анкете владельцу меньше 18. Остаётся подтверждение.")
-                    return
                 self.store.set("mode", arg)
                 await self.say(f"Режим переписки: {'авто' if arg == 'auto' else 'подтверждение'}.")

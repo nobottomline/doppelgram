@@ -141,7 +141,6 @@ mode = "approve"               # approve | auto  (also switchable from Telegram:
 about_file = "about-me.md"     # true facts about you + what may be embellished
 goal_file = "conversation.md"  # what the conversation is for
 style_file = "style.md"        # examples of how you write
-owner_age = 0                  # your age; under 18 disables auto mode
 min_match_age = 18             # the agent never chats with younger matches
 write_first = false            # false: answer only people who wrote to you; "/chat первым вкл" from Telegram
 write_first_min_score = 9      # write first only to matches the agent rated at least this (1-10); "/chat порог 8"

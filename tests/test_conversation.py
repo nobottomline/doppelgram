@@ -189,18 +189,6 @@ async def test_quiet_hours_postpone_auto_messages(tmp_path):
     assert m.store.next_due() > clock.t
 
 
-async def test_owner_under_18_never_gets_auto_mode(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", owner_age=17)
-    assert m.mode == "approve"
-    await m.command("chat_mode", "auto")
-    assert "недоступен" in inbox[-1]
-    await match(m)
-    await m.tick()
-    clock.t += 31
-    await m.tick()
-    assert people.sent_texts(555) == [] and "Черновик" in inbox[-1]
-
-
 async def test_minor_match_is_blocked(tmp_path):
     m, people, inbox, clock = make(tmp_path)
     await match(m, age=17)

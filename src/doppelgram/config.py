@@ -139,7 +139,6 @@ class ConversationConfig:
     style_file: Path
     enabled: bool = False
     mode: str = "approve"  # approve | auto
-    owner_age: int = 0  # 0 < owner_age < 18 disables auto mode: drafts with approval only
     min_match_age: int = 18
     # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
     # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
@@ -157,9 +156,6 @@ class ConversationConfig:
     max_message_chars: int = 400
     daily_budget_usd: float = 1.0
 
-    @property
-    def auto_allowed(self) -> bool:
-        return self.mode == "auto" and not (0 < self.owner_age < 18)
 
 
 @dataclass
@@ -284,10 +280,11 @@ _CONV_KEYS = {f.name for f in fields(ConversationConfig)}
 
 
 def _conversations(base: Path, table: dict) -> ConversationConfig:
-    unknown = set(table) - _CONV_KEYS
+    values = dict(table)
+    values.pop("owner_age", None)  # removed option: ignored in older configs
+    unknown = set(values) - _CONV_KEYS
     if unknown:
         raise ConfigError(f"unknown conversations option(s): {', '.join(sorted(unknown))}")
-    values = dict(table)
     if "write_first" not in values and "first_messages_per_day" in values:
         # Before write_first existed, a positive daily number meant "write first".
         values["write_first"] = int(values["first_messages_per_day"]) > 0
