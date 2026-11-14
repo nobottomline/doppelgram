@@ -141,6 +141,9 @@ class ConversationConfig:
     mode: str = "approve"  # approve | auto
     # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
     # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
+    # Intimate topics (adults only, opt-in): flirting, talking about sex, agreeing on an intimate meeting when
+    # the person clearly wants it. Off: such topics go to the owner. Graphic sexting and minors always do.
+    intimacy: bool = False
     write_first: bool = False
     write_first_min_score: int = 9
     first_messages_per_day: int = 3

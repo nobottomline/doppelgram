@@ -136,6 +136,12 @@ topic instead of chasing dry answers. It moves the chat toward the goal in `conv
 when the chat is warm enough, or the person suggests it, the meeting proposal comes to you as a draft, and
 you send it with «ок».
 
+**Money, contacts, calls, intimacy.** The agent declines money requests itself and shares no contacts or
+links (a phone number is not needed in Telegram); a call proposal comes to you as a draft, like a meeting.
+Intimate topics go to you unless you are an adult and switch on `intimacy` (`/chat интим вкл`): then the
+agent may flirt and talk about it when the person clearly wants it too, never pressures, never asks for
+photos, and hands graphic sexting to you. Any sign that the person is under 18 always goes to you.
+
 **Try it offline first.** `doppelgram -c config.toml test-chat` lets the real agent (your files, prompt and
 guards) talk to a model playing a match, without Telegram. Options: `--card` (their profile), `--persona`
 (how they behave, e.g. "отвечает сухо"), `--agent-first`, `--turns`.
@@ -145,8 +151,8 @@ These rules hold in every mode:
 * **Facts only from your profile.** Embellishment only where you explicitly allowed it; nothing invented.
 * **"Are you a bot?" is never answered by the agent.** It never claims or denies being an AI; the chat is
   paused and handed to you.
-* **Meetings, money, contacts and links, explicit topics, media, and anything unclear** go to you with the
-  context and the agent's draft; the chat waits for your answer.
+* **Meetings and calls, media, and anything unclear** go to you with the context (and a draft for meetings
+  and calls); intimate topics too unless you allowed them; the chat waits for your answer.
 * **You can always take over.** If you write to the person yourself, the agent steps back from that chat.
 * **Account safety.** Writing first is off by default and capped by `first_messages_per_day` when on (writing
   first to strangers is the main cause of `PEER_FLOOD` restrictions); an hourly send cap, quiet hours and

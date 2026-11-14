@@ -151,11 +151,23 @@ async def test_ai_question_is_escalated_without_the_model_and_pauses_the_chat(tm
 
 
 @pytest.mark.parametrize("text,category", [
-    ("давай встретимся в субботу", "meeting"), ("скинь на карту 500", "money"),
-    ("вот мой инст @masha_travel", "contact"), ("мне 16 если что", "minor"), ("пришли нюдс", "explicit"),
+    ("давай встретимся в субботу", "meeting"), ("скинь на карту 500", None), ("вот мой инст @masha_travel", None),
+    ("мне 16 если что", "minor"), ("пришли нюдс", "explicit"), ("может созвонимся вечером?", "call"),
 ])
 def test_sensitive_topics_are_detected(text, category):
     assert classify_incoming(text, None) == category
+
+
+def test_with_intimacy_allowed_only_minors_and_graphic_go_to_the_owner():
+    from doppelgram.conversation import classify_outgoing
+    assert classify_incoming("пришли нюдс", None, intimacy=True) is None
+    assert classify_incoming("мне 16 если что", None, intimacy=True) == "minor"
+    assert classify_outgoing("хочу тебя", intimacy=True) is None
+    assert classify_outgoing("интим", intimacy=False) == "explicit"
+    assert classify_outgoing("я не сижу в инсте") is None  # an answer, not a contact
+    assert classify_outgoing("пиши в тг @my_handle") == "contact"
+    assert classify_outgoing("не, деньги не дам, сорян") is None
+    assert classify_outgoing("ок переведу тебе завтра") == "money"
 
 
 def test_media_is_always_escalated():
@@ -571,10 +583,9 @@ def test_humanize_strips_ascii_quote_pair():
     assert humanize('он сказал "да" и ушёл', lowercase=True) == 'он сказал "да" и ушёл'
 
 
-@pytest.mark.parametrize("text,expected", [("на работе пишу скрипты", None), ("вложился в крипту", "money"),
-                                           ("займи до пятницы", "money"), ("оплатишь такси?", "money")])
-def test_money_regex_word_boundaries(text, expected):
-    assert classify_incoming(text, None) == expected
+@pytest.mark.parametrize("text", ["вложился в крипту", "займи до пятницы", "оплатишь такси?"])
+def test_money_requests_are_left_to_the_agent(text):
+    assert classify_incoming(text, None) is None
 
 
 async def test_takeover_command_during_approved_send_stops_it(tmp_path):
@@ -947,3 +958,44 @@ async def test_switching_writing_first_off_before_the_chat_is_looked_at(tmp_path
     await m.command("chat_mode", "first:off")
     await m.tick()
     assert not any("Черновик" in t for t in inbox) and m.llm.calls == []
+
+
+async def test_intimacy_is_an_opt_in_from_config_or_telegram(tmp_path):
+    m, people, inbox, clock = make(tmp_path, write_first=True)
+    await match(m)
+    await m.tick()
+    assert 'escalate with category "explicit" and no messages' in m.llm.calls[-1][0]["content"]
+    await m.command("chat_mode", "intimacy:on")
+    assert "ведёт сам" in inbox[-1]
+    people.incoming(555, "привет)")
+    m.on_message(555)
+    clock.t += 11
+    await m.tick()
+    system = m.llm.calls[-1][0]["content"]
+    assert "Intimacy is allowed" in system and "under 18 (always" in system
+    from doppelgram.control import parse_owner
+    assert parse_owner("/chat интим вкл").arg == "intimacy:on"
+
+
+async def test_a_call_offer_comes_with_a_draft(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "может созвонимся вечером?")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["давай, после восьми удобно?"]}
+    clock.t += 11
+    await m.tick()
+    assert people.sent_texts(555) == [] and "речь о звонке" in inbox[-1] and "после восьми" in inbox[-1]
+
+
+async def test_a_money_request_is_handled_by_the_agent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "слушай займи 2000 до пятницы")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["ахах не, я сам на мели до стипендии"]}
+    clock.t += 11
+    await m.tick()
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["ахах не, я сам на мели до стипендии"]

@@ -141,6 +141,7 @@ mode = "approve"               # approve | auto  (also switchable from Telegram:
 about_file = "about-me.md"     # true facts about you + what may be embellished
 goal_file = "conversation.md"  # what the conversation is for
 style_file = "style.md"        # examples of how you write
+intimacy = false               # adults only: let the agent handle flirting and intimate topics; "/chat интим вкл"
 write_first = false            # false: answer only people who wrote to you; "/chat первым вкл" from Telegram
 write_first_min_score = 9      # write first only to matches the agent rated at least this (1-10); "/chat порог 8"
 first_messages_per_day = 3     # and at most this many new conversations a day (writing first risks bans)
