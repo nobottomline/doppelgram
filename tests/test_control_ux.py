@@ -1060,6 +1060,9 @@ async def test_digit_menus_count_towards_the_loop_cap(tmp_path):
 @pytest.mark.parametrize("text, buttons, decision", [
     ("Буст анкеты", ["🚀 Продолжить за 99 ₽", "Назад"], {"action": "click", "button_id": "k0c0"}),
     ("Списать 99 звёзд?\n1. Да\n2. Нет", ["1", "2"], {"action": "click", "button_id": "k0c0"}),
+    ("Списать 99 ₽?\n1. Подтвердить\n2. Нет", ["1", "2"], {"action": "click", "button_id": "k0c0"}),
+    ("Списать 99 ₽?\n1. Продолжить\n2. Нет", ["1", "2"], {"action": "send", "text": "1"}),
+    ("Оплата 99 ₽\n1. Согласен\n2. Нет", ["1", "2"], {"action": "click", "button_id": "k0c0"}),
     ("Подтвердите покупку: ответьте ДА", ["Назад"], {"action": "send", "text": "ДА"}),
 ])
 async def test_the_model_cannot_confirm_a_purchase(tmp_path, text, buttons, decision):

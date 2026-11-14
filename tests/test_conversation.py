@@ -807,3 +807,18 @@ async def test_an_escalation_that_did_not_reach_the_owner_is_retried(tmp_path):
     clock.t += ConversationManager.RETRY_S + 1
     await m.tick()
     assert any("встрет" in t.lower() for t in inbox)
+
+
+async def test_a_failed_escalation_does_not_undo_the_owner_taking_over(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    await match(m)
+    people.incoming(555, "давай встретимся завтра")
+    m.on_message(555)
+
+    async def owner_takes_over_then_offline(*a, **k):
+        m.store.update(555, state="owner")
+        return None
+    m.say = owner_takes_over_then_offline
+    clock.t += 11
+    await m.tick()
+    assert m.store.person(555).state == "owner"

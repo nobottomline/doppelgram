@@ -90,7 +90,7 @@ def _menu_lines(text: str) -> dict[str, str]:
 # Purchase intent in any button label: such a button is never a refusal, whatever else it says.
 _BUY_RE = re.compile(r"купи|оформ|оплат|подключ|активир|хочу|приобр|buy|purchase|activate|subscribe|upgrade", re.I)
 # Agreeing to whatever the message asks: under a charge question that means paying.
-_AGREE_RE = re.compile(r"\W*(?:да|ок|ok|yes|конечно|подтвер|соглас|продолж|continue|confirm)\b", re.I)
+_AGREE_RE = re.compile(r"\W*(?:(?:да|ок|ok|yes|конечно)\b|подтвер|соглас|продолж|continue|confirm)", re.I)
 # A price on a button: whatever else it says, pressing it may cost money.
 _PRICE_RE = re.compile(r"₽|\$|€|руб|⭐|stars?\b|\bза\s*\d", re.I)
 

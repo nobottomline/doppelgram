@@ -676,7 +676,9 @@ class ConversationManager:
         if ctrl is not None:
             self.store.add_card(ctrl, person.user_id, "escalation", upto, messages, self.clock())
         else:  # the owner never got it: do not leave the chat paused with nobody aware, try again later
-            self.store.update(person.user_id, state="active", due_at=self.clock() + self.RETRY_S)
+            current = self.store.person(person.user_id)
+            if current is not None and current.state == "paused":  # unless the owner took it over meanwhile
+                self.store.update(person.user_id, state="active", due_at=self.clock() + self.RETRY_S)
 
     async def _send_outbox(self, user_id: int, upto: int, messages: list[str], approved: bool) -> None:
         self.store.drop_outbox(user_id)
