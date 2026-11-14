@@ -1,0 +1,35 @@
+name: Bug report
+description: Something the agent did wrong or a crash
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste** session files, `.env`, API keys, owner ids, chat exports, or other people's profiles,
+        photos or names. Describe screens by their buttons and structure; replace real text with placeholders.
+        Security problems go to a private advisory, see SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What the agent did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: screen
+    attributes:
+      label: The bot's screen
+      description: Button labels and the kind of message (picture, text, keyboard). No personal data.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant lines from the log, with ids and names removed.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version and system
+      placeholder: "0.1.0, Ubuntu 24.04, Python 3.11, model openai/gpt-6-luna"
+    validations:
+      required: true

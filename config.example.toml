@@ -1,0 +1,152 @@
+# doppelgram configuration. Secrets do NOT go here: put them in .env (see .env.example).
+# Relative paths are resolved against this file's directory.
+
+data_dir = "data"            # session, SQLite state; keep it private (chmod 700)
+
+[telegram]
+# Your own app credentials from https://my.telegram.org → API development tools.
+# api_id may also come from the TG_API_ID environment variable; api_hash always comes from TG_API_HASH.
+api_id = 0
+session = "data/account"     # Telethon appends .session
+device_model = "Server"
+system_version = "Ubuntu 24.04"
+app_version = "doppelgram 0.1"
+lang_code = "ru"
+
+# The bots this account works with. Each runs as its own agent with its own mode, task and state
+# (data/<name>.sqlite3). `name` is what you use in commands: "/stop бибинто", "/mode ручной дайвинчик".
+# Any [behavior] option can be overridden per bot.
+[[bots]]
+name = "дайвинчик"
+username = "@leomatchbot"
+task_file = "task-leomatch.md"
+mode = "auto"                  # авто; "/mode ручной дайвинчик" to confirm every profile yourself
+confidence_threshold = 0.75    # умный: below this confidence the profile goes to you
+deny_buttons = ["💌", "📹", "⭐", "VIP", "Premium", "Премиум", "Купить", "Оформить", "Оплатить", "Подключить",
+                "Активировать", "⚠️", "Жалоба"]
+premium_pattern = "premium|премиум|vip|подписк|звёзд|звезд|stars|буст|boost|оплат"
+# Refusals are never blocked, even if they name the paid feature ("Пока без Premium").
+decline_buttons = ["Нет", "Не сейчас", "Позже", "Пока без", "Без Premium", "Назад", "Отказаться", "Пропустить",
+                   "Смотреть анкеты"]
+match_pattern = "Начинай общаться|взаимная симпатия"
+rating_buttons = "❤|👍|👎"     # Leomatch rates with hearts; its numbered menu buttons are not ratings
+# Keep going without you: if the model wants to stop (ads, channels, location requests...), press one of these.
+continue_buttons = ["Продолжить смотреть", "Смотреть анкеты", "🚀"]
+# Blocks, bans and identity checks always come to you; add more screens here.
+owner_required_pattern = "верификац|кружок"
+# "Слишком много ❤️ за сегодня": the like limit. Pause, then press "Главное меню" every few hours to try again.
+limit_pattern = 'слишком много\W.{0,12}за сегодня|загляни к нам попозже|анкеты закончились|закончились анкеты'
+limit_retry_h = 4
+resume_buttons = ["Главное меню", "Смотреть анкеты"]
+age_pattern = '^[^,\n]+,\s*(\d{1,2}),'   # where the age is in a card ("Аня, 21, Москва")
+
+[[bots]]
+name = "бибинто"
+username = "@bibinto_bot"
+task_file = "task-bibinto.md"
+mode = "auto"
+confidence_threshold = 0.6
+deny_buttons = ["💌", "💘", "⚠️", "Жалоба", "⭐", "VIP", "Премиум", "Купить", "Оформить", "Оплатить",
+                "Подключить", "Активировать", "Коала", "Валентин", "Отключить"]
+premium_pattern = "premium|премиум|vip|подписк|звёзд|звезд|stars|буст|boost|оплат"
+decline_buttons = ["Нет", "Не сейчас", "Позже", "Пока без", "Назад", "Отказаться", "Пропустить"]
+# "⭐️ Кто-то из вашего города, оценил вас, на 10 баллов. Посмотрим кто это?": open it, rate as usual;
+# a rating of at least `reciprocal_min` (fits your taste) is raised to the score that person gave you.
+incoming_rating_pattern = 'оценил[аи]?\s+вас,?\s+на\s+(\d{1,2})\s*балл'
+incoming_open_buttons = ["Посмотреть"]
+reciprocal_min = 6
+continue_buttons = ["Оценивать", "🚀"]
+owner_required_pattern = "верификац"
+# "Коала накушалась твоих оценок! Возвращайся чуть позже": refills within the hour, then "🚀 Оценивать".
+limit_pattern = 'накушалась|возвращайся чуть позже'
+limit_retry_h = 1
+resume_buttons = ["Оценивать"]
+age_pattern = '(\d{1,2})\s*лет'          # "Аня, 22 лет"
+
+[owner]
+# Numeric id(s) of your OTHER account that controls the agent (find it with `doppelgram resolve @username`).
+# Write to this account once from that account so Telegram lets it reply to you.
+user_ids = []
+allow_saved_messages = true  # commands typed in Saved Messages of this account also work
+
+# Any OpenAI-compatible Chat Completions endpoint with a vision model. Parameters a provider rejects
+# (response_format, max_tokens, temperature) are adapted automatically. Fallback models use the same endpoint.
+#   OpenAI:     base_url = "https://api.openai.com/v1"      api_key_env = "OPENAI_API_KEY"
+#   Z.ai GLM:   base_url = "https://api.z.ai/api/paas/v4"   api_key_env = "ZAI_API_KEY"       model = "glm-4.6v"
+#   DeepSeek:   base_url = "https://api.deepseek.com"       api_key_env = "DEEPSEEK_API_KEY"  model = "deepseek-flash"
+#   Ollama:     base_url = "http://localhost:11434/v1"      api_key_env = ""                  model = "qwen3-vl"
+[llm]
+base_url = "https://openrouter.ai/api/v1"
+api_key_env = "OPENROUTER_API_KEY"
+model = "openai/gpt-6-luna"                   # must accept images
+allowed_models = ["z-ai/glm-5v-turbo"]       # what "/set модель ..." may switch to (plus `model`)
+fallback_models = ["z-ai/glm-5v-turbo"]
+max_tokens = 1500
+temperature = 0.2
+json_mode = true
+image_max_side = 1536
+# Used only when the provider does not report cost itself (OpenRouter does).
+price_in_per_mtok = 0.10
+price_out_per_mtok = 0.50
+# Provider-specific request fields, merged into every request:
+# extra_body = { reasoning = { effort = "low" } }
+
+# Defaults for all bots. Most of these can also be changed from Telegram: /settings, /set, /reset.
+# A value set from Telegram overrides this file until /reset.
+[behavior]
+taste_file = "taste.md"      # shared taste profile "default": this file + rules + reference photos
+taste_profile = "default"
+max_reference_images = 6     # reference photos shown to the model per decision
+# What the LLM provider sees of ages in profile texts (local data is never changed):
+#   "keep" — as is;  "18" — the age is replaced by 18;  "hide" — all digits are removed from the text.
+age_in_prompt = "18"
+hide_numbers_10_18 = true    # also drop standalone numbers 10-18 from profile texts (possible ages); /set числа выкл
+# Optional hard age gate for bots that show minors (Leomatch and Bibinto only show adults to adults):
+# min_age = 18, skip_buttons = ["👎"] — younger profiles are skipped without the model.
+mode = "auto"                # auto (авто) | smart (умный) | supervised (ручной)
+confidence_threshold = 0.7   # умный: below this model confidence the profile goes to you
+ask_timeout_min = 0          # умный: apply the agent's own choice after N minutes without your answer (0 = wait)
+spot_check_rate = 0.05       # умный/авто: share of autonomous decisions sent to you afterwards to rate yourself
+spot_checks_per_hour = 2
+autostart = false            # first launch waits for /start from the owner
+examples_in_prompt = 40      # how many of your past ratings the model sees
+history_in_prompt = 6
+settle_s = 2.0               # wait for the bot to finish editing before looking
+poll_interval_s = 60
+action_delay_min_s = 3.0     # human-like pause before every click
+action_delay_max_s = 8.0
+stuck_timeout_s = 300        # no reaction from the bot this long → retry once, then stop and ask
+max_wait_s = 21600           # longest "come back later" wait the model may choose
+limit_resume = true          # bot limit reached (no more profiles): try again by itself; /set автопродолжение выкл
+limit_retry_h = 4            # hours between tries (bots override it above); /set после_лимита 6
+active_hours_enabled = true  # work only in these hours, rest at night; /set часы_работы выкл
+active_hours = "10:00-23:00" # /set часы 9-22 (may cross midnight: "22-02")
+timezone = "Europe/Moscow"   # for the hours and the daily norm; /set пояс +5
+daily_ratings_enabled = false  # stop after a daily number of rated profiles; /set дневная_норма вкл
+daily_ratings = 150          # /set норма 120
+warning_pause_s = 8          # a bot's "слишком быстро": wait this long, then go on (never stops the agent)
+max_actions_per_hour = 90    # per bot; the account total is the sum
+daily_budget_usd = 1.0       # per bot
+report_every_h = 6           # periodic status message to the owner (0 = off)
+supervise_images_only = true
+start_command = "/start"     # sent once if the chat with the bot is empty
+
+# Chats with matched people (Leomatch gives a link to the person's Telegram after a mutual like).
+# Off by default. In "approve" mode every message waits for your "ок"; in "auto" the agent writes itself
+# but still sends you "are you a bot?", meetings, money, contacts, explicit topics, media and anything unclear.
+[conversations]
+enabled = false
+mode = "approve"               # approve | auto  (also switchable from Telegram: "/chat авто")
+about_file = "about-me.md"     # true facts about you + what may be embellished
+goal_file = "conversation.md"  # what the conversation is for
+style_file = "style.md"        # examples of how you write
+owner_age = 0                  # your age; under 18 disables auto mode
+min_match_age = 18             # the agent never chats with younger matches
+first_messages_per_day = 0     # 0: never write first, wait for the match (writing first risks bans)
+max_sends_per_hour = 20
+reply_delay_min_s = 45
+reply_delay_max_s = 240
+quiet_hours = "01:00-09:00"
+timezone = "Europe/Moscow"
+lowercase = true               # write like a person in a messenger
+daily_budget_usd = 1.0

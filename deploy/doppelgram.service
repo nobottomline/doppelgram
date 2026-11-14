@@ -1,0 +1,29 @@
+[Unit]
+Description=Doppelgram (LLM agent in a Telegram user account)
+After=network-online.target
+Wants=network-online.target
+# Stop crash-looping (e.g. revoked session) instead of hammering Telegram.
+StartLimitIntervalSec=900
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=doppelgram
+Group=doppelgram
+WorkingDirectory=/opt/doppelgram
+EnvironmentFile=/opt/doppelgram/.env
+ExecStart=/opt/doppelgram/.venv/bin/doppelgram -c /opt/doppelgram/config.toml run
+Restart=on-failure
+RestartSec=30
+# Exit code 2 = configuration error: restarting will not help.
+RestartPreventExitStatus=2
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/doppelgram/data
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
