@@ -757,8 +757,9 @@ class ConversationManager:
         self.store.update(person.user_id, state="paused")
         draft = ("\n\nЧерновик агента:\n" + "\n".join(messages)) if messages else ""
         ctrl = await self.say(f"⚠️ {person.name} ({person.bot}): {reason.rstrip('. ')}.\n{self._context(person, history)}{draft}"
-                              f"\n\nОтветьте своим текстом (уйдёт как есть), «ок» (отправить черновик), "
-                              f"«веди» — пусть агент продолжает, «сам» — дальше пишете вы.")
+                              f"\n\nОтветьте своим текстом (уйдёт как есть), "
+                              + ("«ок» (отправить черновик), " if messages else "")
+                              + "«веди» — пусть агент продолжает, «сам» — дальше пишете вы.")
         if ctrl is not None:
             self.store.add_card(ctrl, person.user_id, "escalation", upto, messages, self.clock())
         else:  # the owner never got it: do not leave the chat paused with nobody aware, try again later
