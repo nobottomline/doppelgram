@@ -8,6 +8,7 @@ conversation.md, about-me.md and style.md before switching conversations on.
 from __future__ import annotations
 
 import random
+import time
 from dataclasses import replace
 
 from .config import ConversationConfig
@@ -71,7 +72,7 @@ class _Chat:
 
 class _Clock:
     def __init__(self):
-        self.t = 1_800_000_000.0
+        self.t = time.time()  # today: the prompt and any web lookup see the real date
 
     def __call__(self) -> float:
         return self.t
@@ -81,7 +82,7 @@ class _Clock:
 
 
 async def simulate(cfg: ConversationConfig, llm: LLMClient, *, card: str, persona: str, turns: int,
-                   agent_first: bool, out=print) -> list[str]:
+                   agent_first: bool, out=print, lookup=None) -> list[str]:
     """Run the dialogue; returns the owner-facing notices (escalations, drafts)."""
     ref = PersonRef(1, "match_example", card.split(",")[0].strip() or "Собеседник")
     chat = _Chat(ref)
@@ -92,11 +93,12 @@ async def simulate(cfg: ConversationConfig, llm: LLMClient, *, card: str, person
         notices.append(str(text))
         return 9000 + len(notices)
 
-    sim_cfg = replace(cfg, enabled=True, mode="auto", quiet_hours="", write_first=agent_first,
+    sim_cfg = replace(cfg, enabled=True, mode="auto", quiet_hours="", late_hours="", write_first=agent_first,
+                      reply_delay_min_s=5, reply_delay_max_s=30, long_delay_chance=0,  # the clock barely moves
                       write_first_min_score=1, first_messages_per_day=max(cfg.first_messages_per_day, 1),
                       daily_budget_usd=0)
     manager = ConversationManager(sim_cfg, llm, chat, ConversationStore(":memory:"), notify,
-                                  clock=clock, sleep=clock.sleep, rng=random.Random(0))
+                                  clock=clock, sleep=clock.sleep, rng=random.Random(0), lookup=lookup)
     partner_system = PARTNER_SYSTEM.format(card=card, persona=persona)
 
     async def partner_says() -> bool:

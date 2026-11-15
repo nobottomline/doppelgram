@@ -151,6 +151,17 @@ class ConversationConfig:
     speech_model: str = "google/gemini-3.8-flash"
     speech_fallback_models: list[str] = field(default_factory=lambda: ["google/gemini-2.5-flash"])
     speech_max_seconds: float = 180.0
+    # Looking things up: when a chat mentions something the model may not know (news, a name, an event, slang),
+    # a short web search answers it before the reply (OpenRouter web plugin, Exa: about $0.007 a search). Only the
+    # short queries are sent, never the chat. Searches are capped per day; an answer is reused for lookup_cache_h.
+    web_lookup: bool = True
+    lookup_model: str = ""  # empty: the [llm] model
+    lookup_results: int = 3
+    lookups_per_day: int = 40
+    lookup_cache_h: float = 12.0
+    # The owner's notes on words and slang ("слово - что значит" per line), shown to the model if the file exists.
+    slang_file: Path | None = None
+    builtin_slang: bool = True  # also a built-in list of common chat slang (slang.py)
     write_first: bool = False
     write_first_min_score: int = 9
     first_messages_per_day: int = 3
@@ -320,7 +331,7 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
         # Before write_first existed, a positive daily number meant "write first".
         values["write_first"] = int(values["first_messages_per_day"]) > 0
     for key, default in (("about_file", "about-me.md"), ("goal_file", "conversation.md"),
-                         ("style_file", "style.md")):
+                         ("style_file", "style.md"), ("slang_file", "slang.md")):
         values[key] = _path(base, values.get(key, default))
     cfg = ConversationConfig(**values)
     if cfg.mode not in ("approve", "auto"):
@@ -337,6 +348,8 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
         raise ConfigError("conversations.write_first needs first_messages_per_day of at least 1")
     if not 0 <= cfg.long_delay_chance <= 1 or cfg.long_delay_max_s < cfg.long_delay_min_s:
         raise ConfigError("long_delay_chance must be 0-1 and long_delay_max_s >= long_delay_min_s")
+    if not 1 <= cfg.lookup_results <= 10 or cfg.lookups_per_day < 0 or cfg.lookup_cache_h < 0:
+        raise ConfigError("lookup_results must be 1-10, lookups_per_day and lookup_cache_h at least 0")
     if cfg.reply_delay_max_s < cfg.reply_delay_min_s:
         raise ConfigError("reply_delay_max_s must be >= reply_delay_min_s")
     try:

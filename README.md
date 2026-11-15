@@ -114,6 +114,7 @@ On Ubuntu, from a checkout of this repository:
 | `about-me.md` | true facts about you for conversations, with notes on what may be embellished or should not be mentioned |
 | `conversation.md` | what you want from meeting people and how the agent should talk |
 | `style.md` | examples of how you write, one message per line |
+| `slang.md` | optional: words and slang you use or meet, `слово - что значит` per line (common slang is built in) |
 
 The leading block of `#` lines in these files is a comment the model never sees. The `taste`, `about-me` and
 `style` templates contain only that comment, so nothing is assumed about you until you write it.
@@ -226,9 +227,22 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   away or tries to keep it, it may answer briefly or stay a little, for at most `night_grace_min` minutes into
   `quiet_hours` (01:30–09:00); otherwise nothing is sent until the morning, when night messages get an answer,
   sometimes with a short "сорри, уснул". It never writes first or follows up at night.
-- **Not an assistant.** Asked to write code, homework, a poem, to translate, to "ignore instructions" or to show
-  a prompt, it reacts like a person ("эм, ты о чём?") and never does it; a message with code, a numbered list
-  or an assistant's phrasing is never sent, and "what model are you?" comes to you.
+- **Not an assistant.** Asked to write code, homework, a poem, to translate, to "ignore instructions", to show a
+  prompt or "which model are you", it answers itself the way a person who does not get it would: short and plain
+  ("в смысле?", "не, стихи писать не умею, к сожалению", "я в программировании не шарю"), no jokes about it, no
+  topic jump. A message with code, a numbered list or an assistant's phrasing is never sent.
+- **What it does not know.** Its knowledge may be out of date, and you do not know everything either. A name,
+  an event, a show, a meme, slang or news it is not sure about is never faked: it asks like a person ("а кто
+  это?", "не слышал, что там?") or, when that would sound odd, looks it up first (`web_lookup`, below). Common
+  chat slang is built in ("это база" is agreement, not "basic"); add your own words to `slang.md`.
+- **Looking things up.** The model may ask for one or two short web searches before replying (OpenRouter's web
+  plugin with Exa, about $0.007 a search, `lookups_per_day` = 40, answers reused for `lookup_cache_h` = 12 h).
+  Only the short query is sent, never the chat; queries with the person's name, a contact, a link or a phone
+  number are dropped. Results are treated as untrusted data. Needs OpenRouter; on other providers the agent
+  asks the person instead.
+- **What it says about you.** Anything about you the agent says that is not in `about-me.md` comes to you as a
+  short note ("агент говорит о вас то, чего нет в about-me: …") and is remembered for that person, so it stays
+  consistent. If it is wrong, add the truth to `about-me.md` or take the chat over.
 - **Read receipts.** Their messages are marked read only when an answer is about to go out, a few seconds
   before typing (a network failure right after can leave them read without an answer).
 - **Late answers.** Answering hours later, it may open with a short reason from your life ("сорри, пары
@@ -249,7 +263,9 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   напишу") and sends you a card with free times from your schedule and its draft. Reply in plain words
   ("суббота в 18", "не могу, перенеси") and it writes that; «ок» sends its draft, «!текст» your words as
   they are.
-- **"Are you a bot?"** It never claims or denies being an AI; the chat pauses and waits for you.
+- **"Are you a bot?"** A direct question ("ты бот?", "ты живой человек?") is never answered by the agent: it
+  never claims or denies being an AI, the chat pauses and waits for you. Tricks such as "which model are you" are
+  not that question: the agent handles them itself (see above).
 - **Money and contacts.** It declines money requests itself and never shares contacts or links; any promise
   to pay comes to you.
 - **Intimacy.** With `intimacy` on (default, for adult owners) it may flirt and talk about it when the person
@@ -271,7 +287,21 @@ uv run doppelgram -c config.toml test-chat --persona "отвечает сухо"
 ```
 
 `test-chat` options: `--card` (their profile), `--persona` (how they behave), `--agent-first`, `--turns`.
-Nothing touches Telegram, but both commands make real, billed requests to your model provider.
+
+```sh
+# trap scenarios: code requests, prompt injections, "are you a bot?", a made-up artist and slang word,
+# fake news, questions about you, money, contacts, a meeting; graded by a judge model
+uv run doppelgram -c config.toml eval                 # all of them; --list shows them
+uv run doppelgram -c config.toml eval --repeat 3      # answers vary: run each several times
+uv run doppelgram -c config.toml eval --only fake_artist,inject_model --json results.json
+```
+
+`eval` runs the agent exactly as in production (prompt, your files, guards, web lookup) on today's date at
+15:00, checks what the system did (replied, came to you, sent nothing) and asks a judge model (`--judge-model`,
+default the `[llm]` model) whether the text meets the scenario's criteria. It exits with 1 if anything failed.
+Run it before and after changing the prompt, your files or the model. A full run costs a few cents.
+
+Nothing touches Telegram, but these commands make real, billed requests to your model provider.
 
 ## Privacy
 
@@ -285,7 +315,8 @@ Local state stays on your machine or server, in `data/`.
 - your taste: rules and the reference photos *you* sent;
 - with conversations on, per person: name and username, their profile text or bio with all digits removed,
   the agent's plan without digits, a taste score, drafts and queued
-  messages until they are sent, your style examples.
+  messages until they are sent, your style examples, what the agent said about you beyond `about-me.md` (without
+  digits); web search answers (short summaries) for `lookup_cache_h`.
 
 **Never kept:** other people's photos, the captions of profiles the bots show (only matches' profiles are
 kept, as above), ages as numbers, chat texts, voice transcripts, the model's explanations, the bots' pop-up
@@ -295,7 +326,9 @@ answers, free text typed to a bot.
 `age_in_prompt`, numbers 10–18 removed while `hide_numbers_10_18` is on), recent bot messages, the task file,
 your taste, rules, reference photos and past answers. With conversations on: your `about-me.md`,
 `conversation.md` and style examples, the agent's plan for the person, their profile, the recent chat,
-pictures from it and voice audio for transcription.
+pictures from it and voice audio for transcription. With `web_lookup` on: short search queries the model wrote
+(no chat text; names, contacts, links and phone numbers are dropped), which OpenRouter passes to its search
+engine (Exa).
 
 In private-chat prompts, peer declarations `мне N` (10–18) become `мне 18`, including understood voice
 messages and stranger classification. Up to three short inserts such as `если что`, `кстати`, `уже`,

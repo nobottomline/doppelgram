@@ -25,7 +25,8 @@ conversation agent at work without Telegram, use `uv run doppelgram -c config.to
 | `telegram.py`, `transport.py`, `models.py` | the Telethon boundary, its error model and the shared data types |
 | `llm.py`, `speech.py`, `media.py` | the OpenAI-compatible client, voice transcription, images |
 | `schedule.py`, `storage.py`, `taste.py`, `config.py` | working hours, SQLite stores, the taste profile, configuration |
-| `cli.py`, `simulate.py` | the command line and the offline chat simulator |
+| `cli.py`, `simulate.py`, `evaluate.py` | the command line, the offline chat simulator and the trap scenarios (`doppelgram eval`) |
+| `lookup.py`, `slang.py` | web lookups for what the model may not know; built-in chat slang |
 
 ## Rules
 

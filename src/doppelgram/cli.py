@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from .config import ConfigError, load_config
@@ -168,14 +169,17 @@ async def cmd_run(cfg, args) -> int:
 
         conversations = None
         if cfg.conversations is not None:
+            from .lookup import WebLookup
             from .speech import Transcriber
 
             conv_cfg = cfg.conversations
             transcriber = (Transcriber(cfg.llm, conv_cfg.speech_model, conv_cfg.speech_fallback_models,
                                        conv_cfg.speech_max_seconds) if conv_cfg.speech else None)
+            lookup = (WebLookup(cfg.llm, conv_cfg.lookup_model, conv_cfg.lookup_results)
+                      if conv_cfg.web_lookup else None)
             conversations = ConversationManager(conv_cfg, llm, PeopleChannel(account),
                                                 ConversationStore(cfg.data_dir / "conversations.sqlite3"),
-                                                account.notify_owner, transcriber=transcriber)
+                                                account.notify_owner, transcriber=transcriber, lookup=lookup)
         supervisor = Supervisor(agents, account.notify_owner, profiles, conversations,
                                 control=Store(cfg.data_dir / "control.sqlite3"), llm=llm,
                                 allowed_models=[cfg.llm.model, *cfg.llm.allowed_models])
@@ -255,14 +259,53 @@ async def cmd_test_chat(cfg, args) -> int:
     if cfg.conversations is None:
         print("no [conversations] section in the config", file=sys.stderr)
         return 2
+    from .lookup import WebLookup
+
     llm = LLMClient(cfg.llm)
+    conv = cfg.conversations
+    lookup = WebLookup(cfg.llm, conv.lookup_model, conv.lookup_results) if conv.web_lookup else None
     try:
         print(f"Симуляция: {args.card}\n")
-        await simulate(cfg.conversations, llm, card=args.card, persona=args.persona or DEFAULT_PERSONA,
-                       turns=args.turns, agent_first=args.agent_first)
+        await simulate(conv, llm, card=args.card, persona=args.persona or DEFAULT_PERSONA,
+                       turns=args.turns, agent_first=args.agent_first, lookup=lookup)
     finally:
         await llm.aclose()
+        if lookup is not None:
+            await lookup.aclose()
     return 0
+
+
+async def cmd_eval(cfg, args) -> int:
+    """Trap scenarios for the conversation agent on the real model, graded by a judge model."""
+    from .evaluate import SCENARIOS, evaluate, to_json
+    from .llm import LLMClient
+    from .lookup import WebLookup
+
+    if args.list:
+        for sc in SCENARIOS:
+            print(f"{sc.name:<16} {sc.expect:<11} {' / '.join(sc.messages)}")
+        return 0
+    if cfg.conversations is None:
+        print("no [conversations] section in the config", file=sys.stderr)
+        return 2
+    conv = cfg.conversations
+    llm = LLMClient(cfg.llm)
+    judge = LLMClient(replace(cfg.llm, model=args.judge_model, fallback_models=[])) if args.judge_model else None
+    lookup = WebLookup(cfg.llm, conv.lookup_model, conv.lookup_results) if conv.web_lookup else None
+    try:
+        only = [n.strip() for n in args.only.split(",") if n.strip()] if args.only else None
+        try:
+            results = await evaluate(conv, llm, only=only, repeat=args.repeat, lookup=lookup, judge=judge)
+        except ValueError as exc:
+            print(exc, file=sys.stderr)
+            return 2
+        if args.json:
+            Path(args.json).write_text(to_json(results), encoding="utf-8")
+    finally:
+        for client in (llm, judge, lookup):
+            if client is not None:
+                await client.aclose()
+    return 0 if all(r.ok for r in results) else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -286,6 +329,12 @@ def main(argv: list[str] | None = None) -> int:
     tc.add_argument("--persona", default=None, help="who the simulated match is and how they behave")
     tc.add_argument("--turns", type=int, default=8)
     tc.add_argument("--agent-first", action="store_true", help="the agent writes the first message")
+    ev = sub.add_parser("eval", help="run trap scenarios (injections, bot questions, unknown names...) and grade them")
+    ev.add_argument("--only", default="", help="comma-separated scenario names (see --list)")
+    ev.add_argument("--repeat", type=int, default=1, help="run each scenario N times (answers vary)")
+    ev.add_argument("--judge-model", default="", help="the model that grades (default: the [llm] model)")
+    ev.add_argument("--json", default="", help="also save the results to this file")
+    ev.add_argument("--list", action="store_true", help="list the scenarios and exit")
     args = p.parse_args(argv)
 
     _setup_logging(args.verbose)
@@ -297,7 +346,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"config error: {exc}", file=sys.stderr)
         return 2
     handler = {"login": cmd_login, "run": cmd_run, "resolve": cmd_resolve, "test-llm": cmd_test_llm,
-               "test-chat": cmd_test_chat}[args.cmd]
+               "test-chat": cmd_test_chat, "eval": cmd_eval}[args.cmd]
     try:
         return asyncio.run(handler(cfg, args))
     except ConfigError as exc:

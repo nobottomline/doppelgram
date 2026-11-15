@@ -349,7 +349,7 @@ def test_template_comments_are_never_shown_to_the_model(tmp_path):
     from doppelgram.storage import read_user_text
 
     root = Path(__file__).parent.parent
-    for name in ("taste.example.md", "about-me.example.md", "style.example.md"):
+    for name in ("taste.example.md", "about-me.example.md", "style.example.md", "slang.example.md"):
         assert read_user_text(root / name) == "", name  # templates contain no active facts or tastes
     f = tmp_path / "t.md"
     f.write_text("# пример: нравятся блондинки\n\nНравятся брюнетки\n# Не нравятся\n#фитнес тоже ок\n",
