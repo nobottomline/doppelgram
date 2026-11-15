@@ -355,7 +355,8 @@ def _smiley_spans(text: str) -> list[tuple[int, int]]:
         if ch == "(":
             open_count += 1
         elif ch == ")":
-            if re.search(r"[:;=]-?$", text[:i]):  # an emoticon: a smiley even inside brackets
+            if re.search(r"[:;=]-?$", text[:i]) or (marks and marks[-1] == i - 1):
+                # an emoticon (":)", ":))") or the rest of a smiley run: a smiley even inside brackets
                 marks.append(i)
                 continue
             if open_count:

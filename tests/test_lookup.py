@@ -632,6 +632,9 @@ def test_a_list_is_still_caught_after_taming(tmp_path):
         assert classify_outgoing(m._tame([listed], [])[0]) == "assistant"
     assert m._tame(["люблю читать (когда есть время :) особенно вечером)"], []) == \
         ["люблю читать (когда есть время, особенно вечером)"]
+    assert m._tame(["люблю читать (когда есть время :)) особенно вечером)"], []) == \
+        ["люблю читать (когда есть время, особенно вечером)"]
+    assert m._tame(["(да)) ну ладно"], []) == ["(да), ну ладно"]
 
 
 def tamer(tmp_path, style_lines):
