@@ -1332,6 +1332,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if decision.get("memory"):
             self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 2500))
         if action == "wait":
+            self.store.unset(f"facts:{person.user_id}")
             self.store.update(person.user_id, handled_upto=upto)
             next_check = decision.get("next_check_h")
             if isinstance(next_check, (int, float)) and not isinstance(next_check, bool) and math.isfinite(next_check):
@@ -1340,6 +1341,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:4]
         self._remember_quote(person.user_id, decision, history, upto)
         messages = [t[:self.cfg.max_message_chars] for t in messages if t]
+        self._pend_facts(person.user_id, decision, messages)  # the latest decision replaces older pending facts
         if action == "escalate" or not messages:
             category = str(decision.get("category") or "unclear")
             if category in ("meeting", "call"):
@@ -1359,7 +1361,6 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                  written_at=now)
             return
         self._schedule_follow_up(person.user_id, decision, now)
-        self._pend_facts(person.user_id, decision, messages)
         if self.mode == "auto":
             delay = self._reply_delay(history)
             if self._night_end() is not None:  # a lively chat at night: answer within minutes or not at all
@@ -1386,6 +1387,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         hold = [t for t in hold if classify_outgoing(t, intimacy=self.intimacy) is None]
         slots = str(decision.get("slots") or "").strip()[:300]
         hold = [t for t in hold if not _WHEN_WHERE_RE.search(t)]
+        self._pend_facts(person.user_id, decision or {}, draft)  # the draft the owner may send with «ок»
         send_hold = bool(hold) and self.mode == "auto"
         night = self._night_end() is not None
         if send_hold and night and not self._night_lively(history, self.clock()):

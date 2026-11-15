@@ -47,7 +47,7 @@ def clean_queries(raw, private_words: list[str], limit: int = 2) -> list[str]:
         raw = [raw]
     if not isinstance(raw, list):
         return []
-    private = [w.lower() for w in private_words if w and len(w) >= 3]
+    private = [w.lower() for w in private_words if w and len(w) >= 2]
     out: list[str] = []
     for q in raw:
         if not isinstance(q, str):
@@ -55,8 +55,11 @@ def clean_queries(raw, private_words: list[str], limit: int = 2) -> list[str]:
         q = " ".join(q.split())[:MAX_QUERY_CHARS]
         low = q.lower()
         digits = sum(c.isdigit() for c in q)  # a phone number written with spaces
-        if (len(q) < 2 or digits >= 7 or _PRIVATE_RE.search(q) or any(w in low for w in private)
-                or low in (o.lower() for o in out)):
+        words = set(re.findall(r"\w+", low))
+        # A short name ("Ян", "Ли") only as a whole word; a longer one by its stem, so declensions count too
+        # ("Маша" -> "Машей"). A dropped query costs little: the agent asks the person instead.
+        named = any((w in words) if len(w) < 4 else (w[:-1] in low) for w in private)
+        if len(q) < 2 or digits >= 7 or _PRIVATE_RE.search(q) or named or low in (o.lower() for o in out):
             continue
         out.append(q)
         if len(out) >= limit:

@@ -418,3 +418,49 @@ async def test_facts_of_a_skipped_draft_never_ride_on_a_later_message(tmp_path):
         await m.tick()
     assert people.sent_texts(555) == ["гляну расписание и напишу"]
     assert not any("есть машина" in n for n in inbox if "about-me" in n)
+
+
+def test_short_names_are_dropped_as_whole_words_only():
+    private = ["Ян", "Ли", "li_wu", "Маша"]
+    assert clean_queries(["Ян Ли университет", "li_wu место работы", "Машей зовут", "янтарь купить",
+                          "лист бумаги"], private) == ["янтарь купить", "лист бумаги"]
+
+
+async def test_facts_in_a_meeting_draft_are_recorded_when_the_owner_sends_it(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну и напишу"], "slots": "суббота",
+                   "messages": ["у меня своя машина, давай в субботу?"], "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    card = 9000 + next(i for i, n in enumerate(inbox, 1) if n.startswith("📅"))
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert not any("есть машина" in n for n in inbox if "about-me" in n)  # only the hold went out
+    await m.answer_card(card, "ок")
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert "у меня своя машина, давай в субботу?" in people.sent_texts(555)
+    assert any("есть машина" in n for n in inbox if "about-me" in n)
+
+
+async def test_a_skipped_drafts_facts_do_not_ride_on_a_hold_with_the_same_words(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а ты на чём ездишь?")
+    m.llm.reply = {"action": "reply", "messages": ["гляну и напишу", "у меня своя машина"],
+                   "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "пропуск")
+    await m.command("chat_mode", "auto")
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну и напишу"], "slots": "суббота",
+                   "messages": ["давай в субботу?"]}
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == ["гляну и напишу"]
+    assert not any("есть машина" in n for n in inbox if "about-me" in n)
