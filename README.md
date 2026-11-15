@@ -188,8 +188,8 @@ Volume matters most for the risk of a block: keep the norm modest and the hours 
 
 ## Conversations with matches
 
-Off by default; switch on with `/chat вкл`. In **approve** mode (default) every message comes to you as a
-draft first; in **auto** mode the agent writes itself and brings you only what you decide.
+Off by default; switch on with `/chat вкл`. In **auto** mode (default) the agent writes itself and brings you
+only what you decide; in **approve** mode (`/chat подтверждение`) every message comes to you as a draft first.
 
 ### Who it talks to
 

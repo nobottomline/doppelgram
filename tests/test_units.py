@@ -207,7 +207,7 @@ def test_example_config_loads(tmp_path, monkeypatch):
     assert cfg.conversations.write_first is False and cfg.conversations.write_first_min_score == 9
     likes = bib
     conv = cfg.conversations
-    assert conv is not None and not conv.enabled and conv.mode == "approve"
+    assert conv is not None and not conv.enabled and conv.mode == "auto"
     assert conv.about_file.name == "about-me.md" and conv.timezone == "Europe/Moscow"
     assert likes.behavior.daily_budget_usd == cfg.behavior.daily_budget_usd
     assert cfg.telegram.session == (tmp_path / "data" / "account").resolve()

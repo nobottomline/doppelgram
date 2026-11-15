@@ -138,7 +138,7 @@ class ConversationConfig:
     goal_file: Path
     style_file: Path
     enabled: bool = False
-    mode: str = "approve"  # approve | auto
+    mode: str = "auto"  # auto: the agent writes itself | approve: every message waits for the owner's «ок»
     # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
     # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
     # Intimate topics (adults only): flirting, talking about sex, agreeing on an intimate meeting when the

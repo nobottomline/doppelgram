@@ -137,7 +137,7 @@ allowed_commands = []        # other commands the model may type; any other text
 # but still sends you "are you a bot?", meetings, money, contacts, explicit topics, media and anything unclear.
 [conversations]
 enabled = false
-mode = "approve"               # approve | auto  (also switchable from Telegram: "/chat авто")
+mode = "auto"                  # auto: the agent writes itself | approve: drafts for your «ок» ("/chat подтверждение")
 about_file = "about-me.md"     # true facts about you + what may be embellished
 goal_file = "conversation.md"  # what the conversation is for
 style_file = "style.md"        # examples of how you write

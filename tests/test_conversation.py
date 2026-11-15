@@ -102,7 +102,7 @@ def make(tmp_path: Path, **over):
     cfg = ConversationConfig(about_file=tmp_path / "about-me.md", goal_file=tmp_path / "goal.md",
                              style_file=tmp_path / "style.md", enabled=True, settle_s=10, first_messages_per_day=3,
                              write_first=True, reply_delay_min_s=30, reply_delay_max_s=30, long_delay_chance=0)
-    cfg = replace(cfg, **over)
+    cfg = replace(cfg, **{"mode": "approve", **over})  # tests choose auto explicitly
     clock = Clock()
     people = FakePeople()
     inbox: list[str] = []
