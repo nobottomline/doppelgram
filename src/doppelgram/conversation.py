@@ -132,8 +132,8 @@ def _prompt_text(text: str) -> str:
 
 # What a person never writes in a chat: code, an assistant's phrasing, a numbered list. If the agent produces it,
 # the message does not go out.
-_ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^\s*(?:import|from)\s+\w+|\bfunction\s*\w*\s*\(|=>|console\.log|"
-                               r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|\breturn\s+\w|;\s*$|"
+_ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^\s*import\s+[a-z_]+\s*$|\bfunction\s*\w*\s*\(|console\.log|"
+                               r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|^\s*return\s+\w+\s*(?:[-+*/%(\[.]|$)|"
                                r"as an ai|language model|языков\w+\s+модел|как\s+ии\b|ии-ассистент|"
                                r"(?:^|\n)\s*1[.)]\s.+\n\s*2[.)]\s", re.I | re.M)
 # A test whether this is a bot: an assistant's task or an instruction to the model. Not escalated: the agent
@@ -997,16 +997,28 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         """At night the agent's own messages go out only right after a lively-chat check (a fresh marker)."""
         if self._night_end() is None:
             return False
+        now = self.clock()
+        if self._quiet_now() is not None:
+            into = self._minutes_into(self.cfg.quiet_hours, now)
+            if into is None or into > self.cfg.night_grace_min:
+                return True  # deep in the night: whatever was prepared waits for the morning
         mark = self.store.get(f"night_ok:{user_id}")
-        return not (mark and self.clock() - float(mark) <= 900)
+        return not (mark and now - float(mark) <= 900)
 
     def _minutes_into(self, window: str, ts: float) -> float | None:
+        """Real minutes since the window began (counted in absolute time, so a clock change does not shift it)."""
         if not window or self._window_end(window, ts) is None:
             return None
-        local = datetime.fromtimestamp(ts, ZoneInfo(self.cfg.timezone))
+        tz = ZoneInfo(self.cfg.timezone)
+        local = datetime.fromtimestamp(ts, tz)
         start_s = window.split("-")[0]
-        start = int(start_s[:-3]) * 60 + int(start_s[-2:])
-        return (local.hour * 60 + local.minute - start) % 1440
+        hour, minute = int(start_s[:-3]), int(start_s[-2:])
+        for back in (0, 1):
+            day = local.date() - timedelta(days=back)
+            start = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).timestamp()
+            if start <= ts:
+                return (ts - start) / 60
+        return None
 
     @staticmethod
     def _lively(history: list[ChatMessage], now: float, minutes: float) -> bool:
@@ -1259,7 +1271,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             delay = self._reply_delay(history)
             if self._night_end() is not None:  # a lively chat at night: answer within minutes or not at all
                 delay = min(delay, 180.0)
-                self.store.set(f"night_ok:{person.user_id}", str(now + delay))
+                if not first and self._night_lively(history, self.clock()):
+                    self.store.set(f"night_ok:{person.user_id}", str(now + delay))
             self.store.set_outbox(person.user_id, upto, messages, now + delay)
             self.store.update(person.user_id, handled_upto=upto)
             self.wake.set()
@@ -1280,12 +1293,19 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         slots = str(decision.get("slots") or "").strip()[:300]
         hold = [t for t in hold if not _WHEN_WHERE_RE.search(t)]
         send_hold = bool(hold) and self.mode == "auto"
+        night = self._night_end() is not None
+        if send_hold and night and not self._night_lively(history, self.clock()):
+            send_hold = False  # nobody is waiting at this hour: do not promise the owner a reply that will not go out
         await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
                              written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
         if send_hold and self.store.open_card(person.user_id) is not None:
             # The agent's own words, checked like any of its messages; the marker lets them out of a paused chat.
             self.store.set(f"hold:{person.user_id}", "1")
-            self.store.set_outbox(person.user_id, upto, hold, now + self._reply_delay(history), keep_cards=True)
+            delay = self._reply_delay(history)
+            if night:  # a lively chat at night: the holding reply goes out within minutes
+                delay = min(delay, 180.0)
+                self.store.set(f"night_ok:{person.user_id}", str(now + delay))
+            self.store.set_outbox(person.user_id, upto, hold, now + delay, keep_cards=True)
             self.wake.set()
 
     def _schedule_follow_up(self, user_id: int, decision: dict, now: float, *, after_send: bool = True) -> None:

@@ -1937,7 +1937,9 @@ def test_the_agent_never_sends_code_lists_or_assistant_phrasing(text):
     assert classify_outgoing(text) == "assistant"
 
 
-@pytest.mark.parametrize("text", ["эм, ты о чём?", "не, я в этом не шарю", "в 1 руке кофе, во 2 телефон"])
+@pytest.mark.parametrize("text", ["эм, ты о чём?", "не, я в этом не шарю", "в 1 руке кофе, во 2 телефон",
+                                  "устал => спать", "ну хорошо;", "ок;\nзавтра", "from now on я спать",
+                                  "return of the king смотрела?"])
 def test_normal_replies_are_not_taken_for_an_assistant(text):
     from doppelgram.conversation import classify_outgoing
     assert classify_outgoing(text) is None
@@ -1954,3 +1956,69 @@ async def test_a_bot_test_request_gets_a_heads_up_and_never_a_code_answer(tmp_pa
     clock.t += 31
     await m.tick()
     assert people.sent_texts(555) == [] and "как ассистент" in inbox[-1]
+
+
+def test_the_night_grace_holds_at_send_time_not_only_when_queued(tmp_path):
+    m, people, inbox, clock = make(tmp_path, timezone="Europe/Moscow", late_hours="23:30-01:30",
+                                   quiet_hours="01:30-09:00")
+    clock.t = at_moscow(2, 59)
+    m.store.set("night_ok:555", str(clock.t))
+    assert not m._night_blocked(555)
+    clock.t = at_moscow(3, 2)  # the same fresh marker, but past night_grace_min
+    assert m._night_blocked(555)
+
+
+async def test_a_first_message_composed_across_the_late_evening_boundary_is_not_sent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    clock.t = at_moscow(23, 29) + 50
+    await match(m, score=10)
+
+    def slow(msgs):
+        clock.t += 40  # the model answers after 23:30
+        return {"action": "reply", "messages": ["привет) как дела?"]}
+    m.llm.reply = slow
+    for _ in range(4):
+        await m.tick()
+        clock.t += 60
+    assert people.sent_texts(555) == [] and m.store.get("night_ok:555") is None
+
+
+async def night_meeting(tmp_path, think_s):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True,
+                                   timezone="Europe/Moscow", late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    await match(m)
+    clock.t = at_moscow(0, 20)
+    people.chats[555] = [ChatMessage(1, True, "ахах да", clock.t - 120),
+                         ChatMessage(2, False, "давай встретимся?", clock.t - 30)]
+    m.store.record_sent(555, 1, clock.t - 120)
+
+    def think(msgs):
+        clock.t += think_s
+        return {"action": "escalate", "category": "meeting", "hold": ["давай, гляну расписание и напишу"],
+                "slots": "суббота", "messages": ["давай в субботу?"]}
+    m.llm.reply = think
+    await answered(m, people, clock)
+    for _ in range(3):
+        clock.t += 61
+        await m.tick()
+    return m, people, inbox
+
+
+async def test_a_holding_reply_goes_out_in_a_lively_night_chat(tmp_path):
+    m, people, inbox = await night_meeting(tmp_path, think_s=5)
+    assert people.sent_texts(555)[-1] == "давай, гляну расписание и напишу"
+
+
+async def test_no_holding_reply_is_promised_when_nobody_waits_at_night(tmp_path):
+    m, people, inbox = await night_meeting(tmp_path, think_s=1800)  # the chat went quiet meanwhile
+    assert m.llm.calls and people.sent_texts(555) == ["ахах да"]
+    assert any("давай в субботу?" in n for n in inbox) and not any("гляну расписание" in n for n in inbox)
+
+
+def test_night_grace_is_counted_in_real_minutes_across_a_clock_change(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    m, people, inbox, clock = make(tmp_path, timezone="Europe/Berlin")
+    second_0245 = datetime(2026, 10, 25, 2, 45, tzinfo=ZoneInfo("Europe/Berlin"), fold=1).timestamp()
+    assert m._minutes_into("01:30-09:00", second_0245) == 135
