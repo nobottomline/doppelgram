@@ -355,8 +355,8 @@ def _smiley_spans(text: str) -> list[tuple[int, int]]:
         if ch == "(":
             open_count += 1
         elif ch == ")":
-            if re.search(r"[:;=]-?$", text[:i]) or (marks and marks[-1] == i - 1):
-                # an emoticon (":)", ":))") or the rest of a smiley run: a smiley even inside brackets
+            if re.search(r"[:;=]-?$", text[:i]) or (marks and marks[-1] == i - 1 and not open_count):
+                # an emoticon (":)") or the rest of a smiley run ("да))"); inside brackets a second ")" closes them
                 marks.append(i)
                 continue
             if open_count:
@@ -1764,17 +1764,19 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return sum(_has_smiley(t) for t in lines) / len(lines) if lines else DEFAULT_SMILEY_RATE
 
     def _tame(self, messages: list[str], history: list[ChatMessage]) -> list[str]:
-        """Models put ")" in almost every message; the owner does it far less (see style.md). A message gets one
-        only if the owner's last messages, at the owner's own rate, have none; otherwise it is taken off."""
+        """Models put ")" in almost every message; the owner does it far less (see style.md). A message keeps its
+        smiley only if the share of smileys among the last messages, with it, stays within the owner's rate (at the
+        start of a chat the missing messages count as plain); otherwise it is taken off."""
         rate = self._smiley_rate()
-        gap = math.inf if rate <= 0 else max(round(1 / rate) - 1, 0)  # plain messages between two smileys
-        window = int(min(max(gap, 0), 40)) if math.isfinite(gap) else 0
-        recent = [m.text or "" for m in history if m.outgoing][-window:] if window else []
+        span = 20  # the last messages the share is counted over
+        recent = [m.text or "" for m in history if m.outgoing][-span:]
         out: list[str] = []
         for text in messages:
             if _has_smiley(text):
-                seen = (recent + out)[-window:] if window else []
-                if not math.isfinite(gap) or any(_has_smiley(t) for t in seen):
+                seen = (recent + out)[-(span - 1):]
+                with_it = sum(_has_smiley(t) for t in seen) + 1
+                counted = max(len(seen) + 1, math.ceil(1 / rate)) if rate > 0 else 1
+                if rate <= 0 or with_it / counted > rate + 1e-9:
                     stripped = _strip_smiley(text)
                     # Taming never changes what the outgoing checks see (a contact, a list): then it stays as is.
                     if classify_outgoing(stripped, intimacy=self.intimacy) == classify_outgoing(

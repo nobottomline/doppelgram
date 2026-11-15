@@ -633,7 +633,8 @@ def test_a_list_is_still_caught_after_taming(tmp_path):
     assert m._tame(["люблю читать (когда есть время :) особенно вечером)"], []) == \
         ["люблю читать (когда есть время, особенно вечером)"]
     assert m._tame(["люблю читать (когда есть время :)) особенно вечером)"], []) == \
-        ["люблю читать (когда есть время, особенно вечером)"]
+        ["люблю читать (когда есть время) особенно вечером"]
+    assert m._tame(["люблю читать (особенно вечером :))"], []) == ["люблю читать (особенно вечером)"]
     assert m._tame(["(да)) ну ладно"], []) == ["(да), ну ладно"]
     assert m._tame(["люблю читать (когда есть время :), особенно вечером)"], []) == \
         ["люблю читать (когда есть время, особенно вечером)"]
@@ -652,8 +653,21 @@ def test_the_owners_rate_spaces_out_smileys(tmp_path):
     assert m._tame(["привет)", "как ты)"], []) == ["привет)", "как ты"]
     recent = [ChatMessage(i, True, "ок)" if i == 1 else "ок", 0.0) for i in range(1, 6)]
     assert m._tame(["ахах)"], recent) == ["ахах"]  # one went out five messages ago
-    old = [ChatMessage(i, True, "ок)" if i == 1 else "ок", 0.0) for i in range(1, 14)]
-    assert m._tame(["ахах)"], old) == ["ахах)"]  # twelve plain ones since
+    old = [ChatMessage(i, True, "ок)" if i == 1 else "ок", 0.0) for i in range(1, 25)]
+    assert m._tame(["ахах)"], old) == ["ахах)"]  # one in the last twenty: within the rate
+
+
+@pytest.mark.parametrize("style,expected", [(["да)", "ладно)", "ахах)", "привет"], 0.75), (["да)", "ну"], 0.5),
+                                            (["да)"] + ["ну"] * 4, 0.2)])
+def test_over_a_long_chat_the_share_of_smileys_matches_the_owners(tmp_path, style, expected):
+    from doppelgram.conversation import ChatMessage, _has_smiley
+    m = tamer(tmp_path, style)
+    history: list = []
+    for i in range(60):
+        text = m._tame(["ну да)"], history)[0]
+        history.append(ChatMessage(i, True, text, 0.0))
+    share = sum(_has_smiley(h.text) for h in history) / len(history)
+    assert share <= expected + 1e-9 and share >= expected - 0.1
 
 
 def test_no_smileys_in_the_style_means_none_at_all(tmp_path):
