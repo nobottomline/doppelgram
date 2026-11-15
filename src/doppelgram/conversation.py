@@ -73,7 +73,7 @@ class PeopleTransport(Protocol):
     async def mark_read(self, user_id: int, max_id: int) -> None:
         """Mark the person's messages up to max_id as read."""
     async def backlog(self, days: int) -> list[PersonRef]:
-        """Private chats with people (not contacts, bots, services) whose last message is theirs and unread,
+        """Private chats with people (not contacts, bots, services) whose last message is theirs (read or not),
         from the last `days` days."""
 
 

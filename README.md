@@ -203,8 +203,8 @@ draft first; in **auto** mode the agent writes itself and brings you only what y
   «веди», «игнор» or with your own text; `lead` lets the agent take up acquaintances itself and asks you about
   the rest; `ignore` leaves them alone.
 - **Chats waiting at start.** When it starts, or on `/chat вкл`, it looks again at the chats it leads and
-  triages chats where the person's last message is unread and from the last `backlog_days` days, one after
-  another.
+  triages chats where the person wrote last (read or not, but never answered) within the last `backlog_days`
+  days, one after another.
 
 ### How it talks
 

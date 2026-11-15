@@ -1529,7 +1529,7 @@ async def test_backlog_keeps_only_unread_chats_people_started_recently():
             return gen()
     account = SimpleNamespace(client=Client(), cfg=SimpleNamespace(owner_ids=[42]), channels={7: object()})
     refs = await PeopleChannel(account).backlog(30)
-    assert [r.user_id for r in refs] == [1]  # 8 comes after the old chat 4: the scan stopped there
+    assert [r.user_id for r in refs] == [1, 3]  # 3 was read but never answered; 8 comes after the old chat 4
 
 
 async def test_nothing_is_marked_read_when_the_send_cannot_happen_now(tmp_path):

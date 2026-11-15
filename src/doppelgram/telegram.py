@@ -548,7 +548,7 @@ class PeopleChannel:
         return found
 
     async def backlog(self, days: int):
-        """Private chats with unknown people whose last message is theirs and unread (recent first)."""
+        """Private chats with unknown people whose last message is theirs, read or not (recent first)."""
         import time as _time
 
         from .conversation import PersonRef
@@ -561,7 +561,8 @@ class PeopleChannel:
                 continue
             if user.id in self.account.cfg.owner_ids or user.id in self.account.channels:
                 continue
-            if msg is None or msg.out or not d.unread_count or not msg.date or msg.date.timestamp() < since:
+            # Their message is the last one, read or not: the owner may have opened the chat without answering.
+            if msg is None or msg.out or not msg.date or msg.date.timestamp() < since:
                 continue
             name = " ".join(filter(None, [user.first_name, getattr(user, "last_name", None)])) or "без имени"
             out.append(PersonRef(user.id, getattr(user, "username", None), name))
