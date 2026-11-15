@@ -1144,16 +1144,20 @@ class Agent:
             lines.append(i("картинку загрузить не удалось — посмотрите её в чате с ботом"))
         return lines
 
-    def _options(self, msg: BotMessage) -> tuple[list[str], list[str], Html]:
+    def _options(self, msg: BotMessage, keep: str | None = None) -> tuple[list[str], list[str], Html]:
         """The choices offered to the owner for a profile: only the rating buttons ("1".."10" in Бибинто, ❤️ and
-        👎 in Дайвинчик), not navigation such as «Назад» or 💤; all buttons when none of them look like ratings."""
+        👎 in Дайвинчик), not navigation such as «Назад» or 💤; all buttons when none of them look like ratings.
+        `keep`: the agent's own choice, always offered, so «ок» and the comparison after a taste check work."""
         buttons = list(msg.clickable_buttons)
         digits = [btn for btn in buttons if re.fullmatch(r"\s*\d{1,2}\s*", btn.text)]
         reactions = [btn for btn in buttons if any(x in btn.text for x in _REACTIONS)]
         chosen = digits if len(digits) >= 2 else reactions if len(reactions) >= 2 else buttons
+        own = next((btn for btn in buttons if btn.id == keep), None)
+        if own is not None and own not in chosen:
+            chosen = [*chosen, own]
         choices = [btn.id for btn in chosen]
         labels = [btn.text for btn in chosen]
-        if chosen is digits:  # "1 · 2 · … · 10": the number is the button
+        if all(re.fullmatch(r"\s*\d{1,2}\s*", t) for t in labels):  # "1 · 2 · … · 10": the number is the button
             listing = Html(" · ".join(esc(t.strip()) for t in labels))
         else:
             listing = Html(" · ".join(f"{n} {esc(t)}" for n, t in enumerate(labels, 1)))
@@ -1162,7 +1166,7 @@ class Agent:
     async def _ask_owner_to_confirm(self, obs: Observation, d: Decision, image: bytes | None,
                                     epoch: int, kind: str = "confirm") -> None:
         msg = obs.current
-        choices, labels, listing = self._options(msg)
+        choices, labels, listing = self._options(msg, keep=d.button_id)
         chosen = msg.button(d.button_id or "")
         conf = f" · уверенность {d.confidence:.2f}" if d.confidence is not None else ""
         head = b("Не уверен — решите вы") if kind == "unsure" else b("Новая анкета")
@@ -1241,7 +1245,7 @@ class Agent:
         probability = min(1.0, rate * weight)
         if self.rng.random() >= probability:
             return
-        choices, labels, listing = self._options(obs.current)
+        choices, labels, listing = self._options(obs.current, keep=d.button_id)
         ctrl_id = await self.say(join(
             b("Проверка вкуса"),
             "Я уже оценил эту анкету сам. А как бы оценили вы?",

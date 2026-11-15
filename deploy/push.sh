@@ -32,7 +32,13 @@ cd "$(dirname "$0")/.."
 
 files=()
 for f in about-me.md style.md conversation.md slang.md taste.md task-*.md; do
-  [[ -f $f && $f != *.example.md ]] && files+=("$f")
+  [[ -f $f && $f != *.example.md ]] || continue
+  # The names go into a remote shell: only plain ones (letters, digits, ".", "_", "-").
+  if [[ ! $f =~ ^[A-Za-z0-9._-]+$ ]]; then
+    echo "skipped (unusual file name): $f" >&2
+    continue
+  fi
+  files+=("$f")
 done
 ((CONFIG)) && files+=(config.toml)
 if ((${#files[@]} == 0 && CODE == 0)); then
@@ -67,6 +73,7 @@ EOF
 fi
 
 if ((CODE)); then
+  # The service is stopped while install.sh replaces the code: on a failure the previous code comes back.
   if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
     echo "note: uncommitted changes are not sent; the code comes from git HEAD ($(git rev-parse --short HEAD))"
   fi
@@ -80,18 +87,34 @@ set -euo pipefail
 mkdir -p "$src"
 tar -xf "$tmp/code.tar" -C "$src"
 rm -rf "$tmp"
+backup="$APP_DIR/data/backup-$stamp/code"
+mkdir -p "\$backup"
+rsync -a --exclude data --exclude .venv --exclude .python --exclude .cache "$APP_DIR"/ "\$backup"/
 cd "$src"
-./deploy/install.sh > /tmp/doppelgram-install.log 2>&1 || { tail -20 /tmp/doppelgram-install.log; exit 1; }
+if ! ./deploy/install.sh > /tmp/doppelgram-install.log 2>&1; then
+  tail -20 /tmp/doppelgram-install.log
+  echo "install failed: restoring the previous code" >&2
+  rsync -a "\$backup"/ "$APP_DIR"/
+  chown -R "$APP_USER:$APP_USER" "$APP_DIR"
+  systemctl start doppelgram || true
+  echo "service: \$(systemctl is-active doppelgram || true)" >&2
+  exit 1
+fi
 rm -rf "$src"
+chown -R "$APP_USER:$APP_USER" "$APP_DIR/data/backup-$stamp"
+chmod -R go-rwx "$APP_DIR/data/backup-$stamp"
 echo "code installed (log: /tmp/doppelgram-install.log)"
 EOF
 fi
 
 if ((CONFIG || CODE)); then
   remote <<'EOF'
+set -uo pipefail
 systemctl restart doppelgram
 sleep 10
-echo "service: $(systemctl is-active doppelgram)"
+state=$(systemctl is-active doppelgram || true)
+echo "service: $state"
 journalctl -u doppelgram --since "-15s" --no-pager -o cat | grep -E "WARN|ERROR|Traceback" | tail -5 || true
+[ "$state" = active ] || { echo "the service is not running" >&2; exit 1; }
 EOF
 fi

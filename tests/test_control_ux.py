@@ -1733,3 +1733,11 @@ def test_leomatch_options_are_like_and_dislike_only(tmp_path):
     assert agents["дайвинчик"]._options(menu)[1] == ["1", "2", "3"]
     other = BotMessage(id=3, text="?", buttons=reply_kb([["Да", "Нет"]]))
     assert agents["дайвинчик"]._options(other)[1] == ["Да", "Нет"]  # no ratings: everything is offered
+
+
+def test_the_agents_own_choice_is_always_offered(tmp_path):
+    from doppelgram.models import BotMessage
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("дайвинчик", FakeLeomatch(), sure)], mode="supervised")
+    msg = BotMessage(id=1, text="Аня", media_kind="photo", media_key="p", buttons=reply_kb([["1", "2", "❤️", "👎"]]))
+    choices, labels, listing = agents["дайвинчик"]._options(msg, keep="r0c2")
+    assert labels == ["1", "2", "❤️"] and "r0c2" in choices and str(listing) == "1 1 · 2 2 · 3 ❤️"
