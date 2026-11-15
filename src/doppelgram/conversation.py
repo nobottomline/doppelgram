@@ -434,6 +434,10 @@ class ConversationStore:
     def drop_cards(self, user_id: int) -> None:
         self.db.execute("DELETE FROM cards WHERE user_id=?", (user_id,))
 
+    def drop_drafts(self, user_id: int) -> int:
+        """Remove the agent's drafts for this chat (not escalations or the owner's own text)."""
+        return self.db.execute("DELETE FROM cards WHERE user_id=? AND kind='draft'", (user_id,)).rowcount
+
     def set_outbox(self, user_id: int, upto: int, messages: list[str], send_at: float,
                    approved: bool = False, owner_text: bool = False) -> None:
         """`approved`: the owner said «ок» to it; `owner_text`: the owner wrote it (stored as 2)."""
@@ -591,6 +595,8 @@ class ConversationManager:
             if minor and not known.minor:  # learnt later: nothing prepared before goes out, answer anew
                 self.store.update(ref.user_id, minor=1, score=None)
                 self._bump(ref.user_id)  # a send already being typed is cancelled at its gate
+                if self.store.drop_drafts(ref.user_id):  # written without knowing: not offered any more
+                    await self.say(f"[{bot}] {ref.name}: по анкете меньше 18, черновик агента отменён.")
                 if known.state == "active":
                     self._redecide(ref.user_id)  # cards (drafts, escalations) stay with the owner
         if known is not None:
@@ -992,8 +998,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not new and not first:
             return
         card = self.store.open_card(person.user_id)
-        if card is not None and card["upto"] == upto:
-            return  # already waiting for the owner on exactly this state
+        if card is not None and (card["upto"] == upto or card["kind"] == "own"):
+            # Already waiting for the owner on this state, or on their own text that failed to send: a new
+            # draft must not replace what the owner wrote.
+            return
         if first and not self.may_write_first(person.score):
             return  # we do not write first to this person: wait until they write
         if first and self.store.first_messages_since(now - 86400) >= self.first_messages_cap:
