@@ -157,8 +157,10 @@ you a card with their first messages and bio, and you answer «веди», «и�
 `ignore`. Switch it with `/chat незнакомые спрашивать | вести | игнор`. There is no limit on chats the
 person started; only writing first is capped.
 
-**Timing and "read".** The agent is never instantly online: it answers about as fast as the person does
-(within `reply_delay_min_s`..`reply_delay_max_s`), sometimes after a long pause, and never during quiet hours.
+**Timing and "read".** The agent answers about as fast as the person does: within seconds when the chat is
+lively, slowly when it is slow (`reply_delay_min_s`..`reply_delay_max_s`), sometimes after a long pause, and
+never during quiet hours. A turn may be a few short messages in a row, typed one after another. Usually they
+are plain messages; the agent quotes one of theirs only to answer something specific after the chat moved on.
 Their messages are marked as read only when it answers, a few seconds before typing. Answering hours or days
 later, it may open with a short reason that fits your life ("сорри, пары были"); asked why it took long, it
 answers the same way.

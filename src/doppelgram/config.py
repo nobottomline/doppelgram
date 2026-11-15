@@ -159,10 +159,10 @@ class ConversationConfig:
     write_first_min_score: int = 9
     first_messages_per_day: int = 3
     max_sends_per_hour: int = 20
-    settle_s: float = 25.0  # wait for a burst of incoming messages before answering
+    settle_s: float = 12.0  # wait for a burst of incoming messages before answering
     # A busy person's pace, never instant: the delay follows how fast the person answers (mirror_pace),
     # within reply_delay_min_s..reply_delay_max_s, and now and then a long pause (long_delay_chance).
-    reply_delay_min_s: float = 60.0
+    reply_delay_min_s: float = 5.0  # a lively exchange gets quick answers; a slow one slow answers
     reply_delay_max_s: float = 5400.0
     mirror_pace: bool = True
     long_delay_chance: float = 0.15

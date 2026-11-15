@@ -61,7 +61,8 @@ class PeopleTransport(Protocol):
     async def resolve(self, links: list[str], mention_ids: list[int]) -> PersonRef | None: ...
     async def history(self, user_id: int, limit: int) -> list[ChatMessage]:
         """Oldest first."""
-    async def send(self, user_id: int, text: str) -> int: ...
+    async def send(self, user_id: int, text: str, reply_to: int | None = None) -> int:
+        """Send a message, optionally as a reply (quote) to one of their messages."""
     async def typing(self, user_id: int, seconds: float) -> None: ...
     async def download(self, user_id: int, msg_id: int, *, thumb: bool = False) -> bytes | None:
         """The media of a message (or its preview frame); None if unavailable or too large."""
@@ -253,11 +254,12 @@ Moving toward the goal:
 - Suggest the next step only when the chat is clearly warm: several real exchanges, they ask questions back, positive tone. Then propose it simply and concretely, the way the goal describes, as an "escalate"/"meeting" draft. If they hesitate, do not push: keep chatting.
 - Keep track of the stage and their interest in "memory".
 
-1 to 3 short messages per turn. If nothing needs an answer, choose "wait".
+Messages: 1 to 4 short ones per turn, like a person typing in a messenger: split a thought into a couple of quick messages when that is natural, or send just one. Normally they are plain messages, not replies. Quote one of their messages ("reply_to": its #id) only when you answer something specific they wrote earlier and the chat has moved on since. If an old question no longer matters, you may leave it. If nothing needs an answer, choose "wait".
 
 Answer with ONE JSON object only:
 {"action": "reply" | "wait" | "escalate",
  "messages": ["..."],
+ "reply_to": <optional #id of their message to quote with the first message>,
  "category": "<for escalate: ai_question|meeting|call|money|explicit|contact|minor|media|unclear>",
  "reason": "<short, in Russian>",
  "memory": "<updated notes about this person, in Russian: what they told, what the owner already told, open topics, what they want (friendship, a date, relationship, intimacy), stage, interest level; replaces the previous notes>"}"""
@@ -1120,7 +1122,13 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if action == "wait":
             self.store.update(person.user_id, handled_upto=upto)
             return
-        messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:3]
+        messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:4]
+        quote = decision.get("reply_to")
+        quote = quote if isinstance(quote, int) and any(not m.outgoing and m.id == quote for m in history) else None
+        if quote is not None and quote != upto:  # quoting the newest message is just a normal answer
+            self.store.set(f"reply_to:{person.user_id}", str(quote))
+        else:
+            self.store.unset(f"reply_to:{person.user_id}")
         messages = [t[:self.cfg.max_message_chars] for t in messages if t]
         if action == "escalate" or not messages:
             category = str(decision.get("category") or "unclear")
@@ -1163,7 +1171,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         style = [*filter(None, _read(self.cfg.style_file).splitlines()), *self.store.style_examples()]
         lines = []
         for m in history[-self.cfg.history_messages:]:
-            who = "owner" if m.outgoing else person.name
+            who = "owner" if m.outgoing else f"[#{m.id}] {person.name}"
             body = m.text or f"({m.media_kind or 'media'})"
             lines.append(f"{who}: {body}")
         parts = [
@@ -1357,8 +1365,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # message found in the chat is known to be this one, not an older one with the same words.
             newest_out = max((m.id for m in history if m.outgoing), default=0)
             self.store.set(f"sending:{person.user_id}", json.dumps({"text": text, "after": newest_out}))
+            quote = None
+            if i == 0 and not owner_text:  # the agent chose to quote one of their messages
+                stored = self.store.get(f"reply_to:{person.user_id}")
+                quote = int(stored) if stored and any(not m.outgoing and m.id == int(stored) for m in history) else None
             try:
-                msg_id = await self.people.send(person.user_id, text)
+                msg_id = await self.people.send(person.user_id, text, reply_to=quote)
             except AccountRestricted:
                 self.store.unset(f"sending:{person.user_id}")
                 raise
@@ -1369,6 +1381,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 return Delivery("send_failed", sent)
             # ---- progress first: whatever happens next, this message is never sent again ----
             sent += 1
+            if i == 0:
+                self.store.unset(f"reply_to:{person.user_id}")
             # The queue holds only what is still unsent: a restart resumes, never repeats.
             self.store.commit_send(person.user_id, msg_id, self.clock(), latest if owner_text else upto,
                                    messages[i + 1:] if from_outbox else None)

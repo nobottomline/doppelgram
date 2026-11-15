@@ -870,9 +870,9 @@ async def test_the_rest_of_a_series_survives_a_command_about_another_chat(tmp_pa
     await answered(m, people, clock)
     real_send = people.send
 
-    async def send_then_command(user_id, text):
+    async def send_then_command(user_id, text, reply_to=None):
         people.send = real_send
-        msg_id = await real_send(user_id, text)
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         await m.command("self", 999)  # about some other chat: bumps the shared epoch
         return msg_id
     people.send = send_then_command
@@ -891,9 +891,9 @@ async def test_an_approved_series_survives_a_command_about_another_chat(tmp_path
     card = 9000 + len(inbox)
     real_send = people.send
 
-    async def send_then_command(user_id, text):
+    async def send_then_command(user_id, text, reply_to=None):
         people.send = real_send
-        msg_id = await real_send(user_id, text)
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         await m.command("self", 999)
         return msg_id
     people.send = send_then_command
@@ -916,11 +916,11 @@ async def test_a_restart_while_typing_resumes_the_queued_reply_without_repeats(t
     class Crash(Exception):
         pass
 
-    async def crash_on_second(user_id, text):
+    async def crash_on_second(user_id, text, reply_to=None):
         sends["n"] += 1
         if sends["n"] == 2:
             raise Crash()  # the process dies while typing the second message
-        return await real_send(user_id, text)
+        return await real_send(user_id, text, reply_to=reply_to)
     people.send = crash_on_second
     clock.t += 31
     with pytest.raises(Crash):
@@ -945,9 +945,9 @@ async def test_an_approved_rest_is_not_sent_after_a_minor_flag(tmp_path):
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
     real_send = people.send
 
-    async def send_then_minor(user_id, text):
+    async def send_then_minor(user_id, text, reply_to=None):
         people.send = real_send
-        msg_id = await real_send(user_id, text)
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
         return msg_id
     people.send = send_then_minor
@@ -962,9 +962,9 @@ async def test_an_approved_series_survives_a_setting_change_in_the_middle(tmp_pa
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "как день прошёл?"])
     real_send = people.send
 
-    async def send_then_setting(user_id, text):
+    async def send_then_setting(user_id, text, reply_to=None):
         people.send = real_send
-        msg_id = await real_send(user_id, text)
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         await m.command("chat_mode", "first:off")
         return msg_id
     people.send = send_then_setting
@@ -1013,9 +1013,9 @@ async def test_an_error_after_a_minor_flag_does_not_restore_an_approved_flirt(tm
     real_send, real_history = people.send, people.history
     state = {"sent": 0}
 
-    async def send_once(user_id, text):
+    async def send_once(user_id, text, reply_to=None):
         state["sent"] += 1
-        msg_id = await real_send(user_id, text)
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         people.send = real_send
         await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
 
@@ -1054,8 +1054,8 @@ async def test_a_failed_approved_series_is_not_offered_again_after_a_minor_flag(
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
     real_send, real_history = people.send, people.history
 
-    async def send_once(user_id, text):
-        msg_id = await real_send(user_id, text)
+    async def send_once(user_id, text, reply_to=None):
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         people.send = real_send
         await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
 
@@ -1309,9 +1309,9 @@ async def test_an_approved_agent_rest_is_not_resumed_after_a_minor_flag(tmp_path
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
     real_send = people.send
 
-    async def send_then_minor(user_id, text):
+    async def send_then_minor(user_id, text, reply_to=None):
         people.send = real_send
-        msg_id = await real_send(user_id, text)
+        msg_id = await real_send(user_id, text, reply_to=reply_to)
         await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
         m.store.unset("redecide:555")  # e.g. a /lead already re-read the chat meanwhile
         return msg_id
@@ -1603,3 +1603,62 @@ async def test_a_queued_stranger_is_left_alone_once_strangers_are_ignored(tmp_pa
     clock.t += 60
     await m.tick()
     assert not any("Вам впервые написал(а)" in t for t in inbox)
+
+
+# ------------------------------------------------------------------ lively pace, bursts, quotes
+def test_a_lively_exchange_gets_quick_answers(tmp_path):
+    import random as _r
+    m, people, inbox, clock = make(tmp_path, reply_delay_min_s=5, reply_delay_max_s=5400, long_delay_chance=0)
+    m.rng = _r.Random(3)
+    lively = [ChatMessage(1, True, "a", 1000.0), ChatMessage(2, False, "b", 1012.0),
+              ChatMessage(3, True, "c", 1020.0), ChatMessage(4, False, "d", 1030.0)]
+    assert all(5 <= m._reply_delay(lively) <= 17 for _ in range(50))
+
+
+async def test_a_turn_can_be_a_few_quick_messages(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "ахах а ты что делаешь?")
+    m.llm.reply = {"action": "reply", "messages": ["ахах", "да ничего, с пар иду", "а ты?", "кстати видел твой пост"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["ахах", "да ничего, с пар иду", "а ты?", "кстати видел твой пост"]
+
+
+async def test_an_earlier_question_can_be_answered_as_a_quote(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    asked = people.incoming(555, "а ты где учишься?")
+    people.incoming(555, "ой, и ещё: ты кино любишь?")
+    m.llm.reply = {"action": "reply", "messages": ["в плехе", "кино да, особенно в кинотеатре"],
+                   "reply_to": asked}
+    await answered(m, people, clock)
+    text, _ = prompt_of(m)
+    assert f"[#{asked}]" in text and "reply_to" in m.llm.calls[-1][0]["content"]
+    clock.t += 31
+    await m.tick()
+    assert people.replies == [asked, None]  # only the first message quotes the earlier question
+
+
+@pytest.mark.parametrize("quote", [None, 12345, "abc", "newest"])
+async def test_plain_messages_unless_a_valid_earlier_message_is_quoted(tmp_path, quote):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    newest = people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"], "reply_to": newest if quote == "newest" else quote}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.replies == [None]
+
+
+async def test_the_owners_own_text_is_never_sent_as_the_agents_quote(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    asked = people.incoming(555, "а ты где учишься?")
+    people.incoming(555, "ау")
+    m.llm.reply = {"action": "reply", "messages": ["в плехе"], "reply_to": asked}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "в рэу)")
+    assert people.replies == [None]

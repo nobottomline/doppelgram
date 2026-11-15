@@ -47,7 +47,7 @@ class _Chat:
     async def history(self, user_id, limit):
         return self.messages[-limit:]
 
-    async def send(self, user_id, text):
+    async def send(self, user_id, text, reply_to=None):
         return self.add(True, text).id
 
     async def typing(self, user_id, seconds):

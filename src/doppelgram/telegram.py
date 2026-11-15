@@ -571,8 +571,8 @@ class PeopleChannel:
         full = await _call(self.client(functions.users.GetFullUserRequest(user_id)))
         return getattr(getattr(full, "full_user", None), "about", None) or ""
 
-    async def send(self, user_id: int, text: str) -> int:
-        sent = await _call(self.client.send_message(user_id, text, parse_mode=None))
+    async def send(self, user_id: int, text: str, reply_to: int | None = None) -> int:
+        sent = await _call(self.client.send_message(user_id, text, parse_mode=None, reply_to=reply_to))
         return sent.id
 
     async def typing(self, user_id: int, seconds: float) -> None:

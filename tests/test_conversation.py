@@ -31,6 +31,7 @@ class FakePeople:
         self.downloads: list = []
         self.bio = ""
         self.read: dict[int, int] = {}
+        self.replies: list = []
         self.backlog_refs: list = []
 
     async def resolve(self, links, mention_ids):
@@ -69,9 +70,10 @@ class FakePeople:
         self.next_id += 1
         self.chats.setdefault(user_id, []).append(ChatMessage(self.next_id, True, text, 0.0))
 
-    async def send(self, user_id, text):
+    async def send(self, user_id, text, reply_to=None):
         if self.fail_send:
             raise self.fail_send
+        self.replies.append(reply_to)
         self.next_id += 1
         self.chats.setdefault(user_id, []).append(ChatMessage(self.next_id, True, text, 0.0))
         return self.next_id
@@ -545,7 +547,7 @@ async def test_failure_mid_batch_never_resends(tmp_path):
     original = people.send
     count = []
 
-    async def flaky(user_id, text):
+    async def flaky(user_id, text, reply_to=None):
         count.append(text)
         if len(count) == 2:
             raise RuntimeError("network")
@@ -572,7 +574,7 @@ async def test_takeover_during_owner_send_is_kept(tmp_path):
     people.typing = typing
     original = people.send
 
-    async def send(user_id, text):
+    async def send(user_id, text, reply_to=None):
         msg_id = await original(user_id, text)
         await m.command("self", 555)  # owner takes over while the message is in flight
         return msg_id
