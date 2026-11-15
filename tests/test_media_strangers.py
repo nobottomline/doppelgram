@@ -1783,3 +1783,12 @@ async def test_the_owner_can_still_send_their_own_words_on_a_meeting_card(tmp_pa
     await answered(m, people, clock)
     await m.answer_card(9000 + len(inbox), "!давай в субботу в шесть у метро")
     assert people.sent_texts(555) == ["давай в субботу в шесть у метро"]
+
+
+@pytest.mark.parametrize("text, meeting", [("выбираюсь в центр, погулять или в кофейню", False),
+                                           ("люблю погулять вечером", False), ("давай погуляем в субботу", True),
+                                           ("может сходим в кино?", True)])
+def test_only_invitations_count_as_meetings(text, meeting):
+    from doppelgram.conversation import classify_outgoing
+    assert (classify_outgoing(text) == "meeting") is meeting
+    assert (classify_incoming(text, None) == "meeting") is meeting
