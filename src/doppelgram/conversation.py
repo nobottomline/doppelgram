@@ -1741,6 +1741,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 return
             if led:
                 await self.say(f"Агент продолжает диалог с {person.name}.")
+            else:
+                current = self.store.person(person.user_id)
+                if current is not None and current.state == "paused" and self.store.open_card(person.user_id) is None:
+                    # Something changed meanwhile (a minor flag): the chat still waits for the owner, card back.
+                    self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
+                    await self.say(f"{person.name}: диалог изменился, ответьте на карточку ещё раз.")
             return
         ok_word = word in ("ок", "ok", "+", "да")
         # Unknown when the flag came (an older database): treat every agent draft as written before it.

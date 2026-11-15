@@ -2062,3 +2062,16 @@ async def test_a_cancelled_answer_gives_the_card_back(tmp_path):
     assert m.store.open_card(555) is not None  # the owner can still answer, the chat is not stuck
     await m.answer_card(card, "!давай в субботу")
     assert people.sent_texts(555)[-1] == "давай в субботу"
+
+
+async def test_lead_cancelled_by_a_minor_flag_gives_the_card_back(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    real_history = people.history
+
+    async def history_then_minor(uid, limit):
+        people.history = real_history
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        return await real_history(uid, limit)
+    people.history = history_then_minor
+    await m.answer_card(card, "веди")
+    assert m.store.open_card(555) is not None and "ещё раз" in inbox[-1]
