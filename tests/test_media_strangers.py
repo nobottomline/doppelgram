@@ -679,3 +679,71 @@ async def test_a_takeover_while_a_meeting_draft_is_written_wins(tmp_path):
     m.llm.reply = draft
     await answered(m, people, clock)
     assert m.store.person(555).state == "owner" and not any("речь о встрече" in t for t in inbox)
+
+
+async def test_a_reply_stopped_at_send_time_is_replaced_by_a_new_one(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["хочу тебя, секс вечером?"]}
+    await answered(m, people, clock)  # queued
+    real_typing = people.typing
+
+    async def typing_then_off(user_id, seconds):
+        people.typing = real_typing  # once
+        await m.command("chat_mode", "intimacy:off")
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_off
+    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
+    for _ in range(4):
+        clock.t += 31
+        await m.tick()
+    people.typing = real_typing
+    assert people.sent_texts(555) == ["как прошёл день?"]
+
+
+async def test_a_later_minor_match_cancels_a_flirt_being_typed(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
+    await answered(m, people, clock)  # queued
+    real_typing = people.typing
+
+    async def typing_then_minor(user_id, seconds):
+        people.typing = real_typing  # once
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_minor
+    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
+    clock.t += 31
+    await m.tick()
+    people.typing = real_typing
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "хочу тебя" not in people.sent_texts(555) and people.sent_texts(555) == ["как прошёл день?"]
+
+
+async def test_lead_after_a_failed_earlier_chat_check_is_respected(tmp_path):
+    from doppelgram.transport import RateLimited
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=5)
+    people.owner_writes(555, "привет, давно не общались")
+    for i in range(10):
+        people.incoming(555, f"сообщение {i}")
+    real = people.wrote_before
+    calls = {"n": 0}
+
+    async def flaky(user_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimited(30)
+        return await real(user_id)
+    people.wrote_before = flaky
+    await match(m)
+    await m.command("lead", 555)
+    m.llm.reply = {"action": "reply", "messages": ["ахах да, рад слышать"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert m.store.person(555).state == "active" and "ахах да, рад слышать" in people.sent_texts(555)

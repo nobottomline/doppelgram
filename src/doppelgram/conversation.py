@@ -556,10 +556,11 @@ class ConversationManager:
                 self.store.update(ref.user_id, card=scrub_text(card))
             if score is not None and known.score is None:
                 self.store.update(ref.user_id, score=score)
-            if minor:  # learnt later: no first message, nothing already queued goes out
+            if minor and not known.minor:  # learnt later: nothing prepared before goes out, answer anew
                 self.store.update(ref.user_id, minor=1, score=None)
-                self.store.drop_outbox(ref.user_id)
                 self.store.drop_cards(ref.user_id)
+                self.epoch += 1  # a send already being typed is cancelled at its gate
+                self._redecide(ref.user_id)
         if known is not None:
             return
         self.allowed.add(ref.user_id)
@@ -583,6 +584,13 @@ class ConversationManager:
         # Otherwise the chat waits: it is looked at when the person writes (on_message).
 
     # --- writing first ------------------------------------------------------------
+    def _redecide(self, user_id: int) -> None:
+        """Forget what was prepared for this chat and answer the person's latest messages again."""
+        self.store.drop_outbox(user_id)
+        self.store.set(f"redecide:{user_id}", "1")
+        self.store.update(user_id, due_at=self.clock())
+        self.wake.set()
+
     def _intimacy_for(self, person: Person) -> bool:
         return self.intimacy and not person.minor
 
@@ -917,6 +925,13 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                f"Передать агенту: /lead {person.user_id}")
                 return
         history = await self.people.history(person.user_id, self.cfg.history_messages)
+        if self.store.get(f"redecide:{person.user_id}"):
+            # Treat everything the person wrote after the agent's last message as unanswered again.
+            self.store.unset(f"redecide:{person.user_id}")
+            last_out = max((m.id for m in history if m.outgoing), default=0)
+            handled = max((m.id for m in history if not m.outgoing and m.id < last_out), default=0)
+            self.store.update(person.user_id, handled_upto=handled)
+            person = self.store.person(person.user_id)
         if self._foreign(person, history):
             self.store.update(person.user_id, state="owner")
             self.store.drop_outbox(person.user_id)
@@ -1098,6 +1113,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if result.status == "capped" and not result.sent:
             self.store.set_outbox(user_id, upto, messages, self.clock() + 900, approved)
         elif result.status == "interrupted" and not result.sent:
+            if self.store.get(f"redecide:{user_id}"):
+                return  # the chat is answered anew, not with these messages
             # The owner changed something (mode, takeover, ...): re-decide with the current settings.
             self.store.set_outbox(user_id, upto, messages, self.clock(), approved=False)
             self.wake.set()
@@ -1164,8 +1181,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if (not approved and text is not None
                 and classify_outgoing(text, intimacy=self._intimacy_for(person)) is not None):
             # Written before something changed (a minor flag, intimacy switched off): decide again.
-            self.store.update(user_id, due_at=self.clock())
-            self.wake.set()
+            self._redecide(user_id)
             return "declined", latest
         if epoch != self.epoch:
             return "interrupted", latest
@@ -1295,6 +1311,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
 
     async def _lead(self, person: Person) -> None:
         """Hand the chat (back) to the agent: messages already in the chat are known, not a takeover."""
+        self.store.unset(f"unchecked:{person.user_id}")  # the owner decided: no earlier-chat check
         history = await self.people.history(person.user_id, self.cfg.history_messages)
         outgoing = [m.id for m in history if m.outgoing]
         incoming = [m.id for m in history if not m.outgoing]
