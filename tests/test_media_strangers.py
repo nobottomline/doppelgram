@@ -1340,3 +1340,32 @@ async def test_the_owners_queued_text_survives_a_minor_flag_while_it_is_typed(tm
         clock.t += 31
         await m.tick()
     assert "мой текст" in people.sent_texts(555)
+
+
+async def test_an_old_owner_message_with_the_same_words_is_not_taken_for_a_lost_send(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.owner_writes(555, "хорошо")  # the owner wrote this themselves earlier
+    await m.command("lead", 555)
+    people.incoming(555, "ну так что, в субботу?")
+    m.llm.reply = {"action": "reply", "messages": ["черновик"]}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "хорошо")
+    assert people.sent_texts(555) == ["хорошо", "хорошо"]
+
+
+def test_status_shows_the_total_spend(tmp_path):
+    import random as _r
+
+    from fakes import Clock, FakeRatingBot, ScriptedLLM, make_config, rate_or_wait
+
+    from doppelgram.agent import Agent
+    from doppelgram.storage import Store
+    clock = Clock()
+    store = Store(":memory:")
+    for day in range(3):
+        store.log_llm(clock() - 86400 * day, "m", 1, 1, 0.5, ok=True)
+    agent = Agent(make_config(tmp_path), FakeRatingBot(), ScriptedLLM(rate_or_wait), store, clock=clock,
+                  sleep=clock.sleep, rng=_r.Random(0))
+    text = str(agent.status_text())
+    assert "$1.50</b> всего" in text and "сегодня $0.50" in text

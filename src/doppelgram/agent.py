@@ -1507,7 +1507,7 @@ class Agent:
         else:
             state = "работает"
         counts = self.store.counts_today(now)
-        spent = f"${counts['spend_usd']:.3f}"
+        spent_total = f"${self.store.spend_total():.2f}"
         total, agree = self.store.example_stats()
         spot = self.store.spot_stats()
         last = self.store.last_action_ts()
@@ -1515,8 +1515,9 @@ class Agent:
             Html(f"Состояние: {b(state)} · режим {b(st.MODE_NAMES.get(self.mode, self.mode))}"),
             Html(f"Сегодня: {count(counts['rated'], 'оценка', 'оценки', 'оценок')}, "
                  f"{count(counts['clicks'] - counts['rated'], 'нажатие', 'нажатия', 'нажатий')} в меню, "
-                 f"{count(counts['llm_calls'], 'запрос', 'запроса', 'запросов')} к модели, "
-                 f"{b(spent)} из ${self.b.daily_budget_usd:g}"),
+                 f"{count(counts['llm_calls'], 'запрос', 'запроса', 'запросов')} к модели"),
+            Html(f"Потрачено на модель: {b(spent_total)} всего (сегодня ${counts['spend_usd']:.2f} из "
+                 f"${self.b.daily_budget_usd:g})"),
         ]
         if total:
             share = f"{100 * agree / total:.0f}%"

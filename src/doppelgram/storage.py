@@ -397,6 +397,9 @@ class Store:
         return self.db.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls WHERE day=?",
                                (utc_day(now),)).fetchone()[0]
 
+    def spend_total(self) -> float:
+        return self.db.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM llm_calls").fetchone()[0]
+
     def counts_today(self, now: float) -> dict:
         day_start = datetime.strptime(utc_day(now), "%Y-%m-%d").replace(tzinfo=UTC).timestamp()
         clicks = self.actions_since(day_start, ("click",))

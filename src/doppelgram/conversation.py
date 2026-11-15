@@ -395,6 +395,7 @@ class ConversationStore:
         self.db.execute("BEGIN")
         try:
             self.record_sent(user_id, msg_id, now)
+            self.db.execute("DELETE FROM kv WHERE key=?", (f"sending:{user_id}",))
             self.db.execute("UPDATE people SET handled_upto=?, first_sent=1 WHERE user_id=?", (handled_upto, user_id))
             if remaining is not None:
                 self.trim_outbox(user_id, remaining)
@@ -1263,13 +1264,19 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                     self.store.set_outbox(person.user_id, upto, messages[i:], self.clock() + 900, approved,
                                           owner_text)
                 return Delivery(status, sent)
+            # A marker of this exact send, cleared together with its record: after a crash in between, the
+            # message found in the chat is known to be this one, not an older one with the same words.
+            newest_out = max((m.id for m in history if m.outgoing), default=0)
+            self.store.set(f"sending:{person.user_id}", json.dumps({"text": text, "after": newest_out}))
             try:
                 msg_id = await self.people.send(person.user_id, text)
             except AccountRestricted:
+                self.store.unset(f"sending:{person.user_id}")
                 raise
             except (TransportError, RateLimited) as exc:
                 # It may or may not have reached the person: never retry it automatically.
                 log.error("send to %s failed: %s", person.user_id, exc)
+                self.store.unset(f"sending:{person.user_id}")
                 return Delivery("send_failed", sent)
             # ---- progress first: whatever happens next, this message is never sent again ----
             sent += 1
@@ -1281,9 +1288,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return Delivery("sent", sent)
 
     def _already_sent(self, user_id: int, history: list[ChatMessage], text: str) -> bool:
-        """The chat's last outgoing message is this text but not in our records: an unrecorded send."""
+        """This very send went out before a crash but was never recorded: its marker is still there, and the
+        chat has a newer outgoing message with these words that is not in our records."""
+        try:
+            marker = json.loads(self.store.get(f"sending:{user_id}") or "null")
+        except ValueError:
+            marker = None
+        if not isinstance(marker, dict) or marker.get("text") != text:
+            return False
         last = next((m for m in reversed(history) if m.outgoing), None)
-        return last is not None and last.text == text and last.id not in self.store.sent_ids(user_id)
+        return (last is not None and last.text == text and last.id > int(marker.get("after", 0))
+                and last.id not in self.store.sent_ids(user_id))
 
     def _gate(self, user_id: int, upto: int, history: list[ChatMessage], epoch: tuple[int, int], *, approved: bool,
               owner_text: bool, first_of_batch: bool, text: str | None = None) -> tuple[str, int]:
