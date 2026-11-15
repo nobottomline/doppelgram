@@ -72,7 +72,7 @@ class PeopleTransport(Protocol):
 # ------------------------------------------------------------- deterministic
 _AI_RE = re.compile(r"\b(бот|бота|боты|робот\w*|нейросет\w*|нейронк\w*|chat ?gpt|gpt|ии|ai|"
                     r"искусственн\w* интеллект\w*|автоответчик\w*)\b", re.I)
-_MEET_RE = re.compile(r"(встрет|увидимся|увидеться|свидан|адрес|приезжай|приеду|заеду|погуляем|"
+_MEET_RE = re.compile(r"(встрет|встреч(?:аемся|аться|аемс)|увидимся|увидеться|свидан|адрес|приезжай|приеду|заеду|погуляем|"
                       r"погулять|сходим|в гости)", re.I)
 # "Is this a real person?" in its many forms is the same question as "are you a bot?".
 _Q = r"(?:вообще\s+|правда\s+|точно\s+|вообще-то\s+)?"
@@ -1250,9 +1250,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 # Nothing was sent in this round: the caller can safely retry the rest.
                 log.warning("cannot prepare a message for %s: %s", person.user_id, exc)
                 return Delivery("error", sent)
-            if from_outbox and self._already_sent(person.user_id, history, text):
+            lost = self._already_sent(person.user_id, history, text) if from_outbox else None
+            if lost is not None:
                 # It went out before a crash, but was never recorded: record it now, never send it twice.
-                mine = next(m for m in reversed(history) if m.outgoing)
+                mine = lost
                 sent += 1
                 self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:])
                 continue
@@ -1287,18 +1288,20 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 await self.sleep(self.rng.uniform(2, 6))
         return Delivery("sent", sent)
 
-    def _already_sent(self, user_id: int, history: list[ChatMessage], text: str) -> bool:
+    def _already_sent(self, user_id: int, history: list[ChatMessage], text: str) -> ChatMessage | None:
         """This very send went out before a crash but was never recorded: its marker is still there, and the
-        chat has a newer outgoing message with these words that is not in our records."""
+        chat has an outgoing message with these words, newer than the marker and not in our records (the
+        owner may have written more after it)."""
         try:
             marker = json.loads(self.store.get(f"sending:{user_id}") or "null")
         except ValueError:
             marker = None
         if not isinstance(marker, dict) or marker.get("text") != text:
-            return False
-        last = next((m for m in reversed(history) if m.outgoing), None)
-        return (last is not None and last.text == text and last.id > int(marker.get("after", 0))
-                and last.id not in self.store.sent_ids(user_id))
+            return None
+        known = self.store.sent_ids(user_id)
+        after = int(marker.get("after", 0))
+        return next((m for m in history if m.outgoing and m.id > after and m.text == text and m.id not in known),
+                    None)
 
     def _gate(self, user_id: int, upto: int, history: list[ChatMessage], epoch: tuple[int, int], *, approved: bool,
               owner_text: bool, first_of_batch: bool, text: str | None = None) -> tuple[str, int]:

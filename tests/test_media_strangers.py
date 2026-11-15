@@ -1369,3 +1369,33 @@ def test_status_shows_the_total_spend(tmp_path):
                   sleep=clock.sleep, rng=_r.Random(0))
     text = str(agent.status_text())
     assert "$1.50</b> всего" in text and "сегодня $0.50" in text
+
+
+async def test_a_lost_send_is_recognised_even_if_the_owner_wrote_more_after_it(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "reply", "messages": ["в субботу?"]}
+    await answered(m, people, clock)  # an escalation: the owner writes their own text
+    card = 9000 + len(inbox)
+
+    class Crash(Exception):
+        pass
+    real_commit = m.store.commit_send
+
+    def crash(*a, **k):
+        m.store.commit_send = real_commit
+        raise Crash()
+    m.store.commit_send = crash
+    with pytest.raises(Crash):
+        await m.answer_card(card, "в субботу в шесть")
+    people.owner_writes(555, "у входа в парк")  # written directly while the agent was down
+    restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
+    clock.t += 61
+    await restarted.tick()
+    assert people.sent_texts(555).count("в субботу в шесть") == 1
+
+
+@pytest.mark.parametrize("text", ["когда встречаемся?", "давай встречаться", "встретимся в субботу?"])
+def test_meeting_words_in_all_forms(text):
+    assert classify_incoming(text, None) == "meeting"
