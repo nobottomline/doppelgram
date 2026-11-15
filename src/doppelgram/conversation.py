@@ -847,7 +847,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         now = self.clock()
         led = [p for p in self.store.people() if p.due_at is None and (
-            p.state == "active" or (p.state == "new" and self.store.open_card(p.user_id) is None))]
+            p.state == "active" or (p.state == "new" and self.strangers != "ignore"
+                                    and self.store.open_card(p.user_id) is None))]
         # (a stranger whose triage was cut short by a restart has neither a due time nor a card)
         for i, p in enumerate(led):
             self.store.update(p.user_id, due_at=now + 30 * i)  # one after another, not all at once
@@ -1326,7 +1327,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         sent = 0
         for i, text in enumerate(messages):
             if i == 0 and self.cfg.read_receipts and upto and self._can_send_now(person.user_id, epoch, approved):
-                await self._mark_read(person.user_id, upto)
+                await self._mark_read_if_current(person.user_id, upto, owner_text)
             try:
                 await self.people.typing(person.user_id, min(12.0, 1.5 + len(text) / 12))
                 history = await self.people.history(person.user_id, self.cfg.history_messages)
@@ -1383,6 +1384,19 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not approved and (self.mode != "auto" or person.state != "active" or self._quiet_now() is not None):
             return False
         return self.store.sends_since(self.clock() - 3600) < self.cfg.max_sends_per_hour
+
+    async def _mark_read_if_current(self, user_id: int, upto: int, owner_text: bool) -> None:
+        """Read only what is being answered: if the person wrote more meanwhile, the agent's reply is stale
+        and will be decided again, so nothing is read now (the owner's own text answers whatever is there)."""
+        try:
+            history = await self.people.history(user_id, self.cfg.history_messages)
+        except AccountRestricted:
+            raise
+        except TransportError:
+            return
+        latest = max((m.id for m in history if not m.outgoing), default=0)
+        if latest == upto or owner_text:
+            await self._mark_read(user_id, latest if owner_text else upto)
 
     async def _mark_read(self, user_id: int, max_id: int) -> None:
         """Read their messages, then a short pause before typing, like a person opening the chat."""

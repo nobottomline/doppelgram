@@ -1074,12 +1074,12 @@ async def test_a_failed_approved_series_is_not_offered_again_after_a_minor_flag(
 async def test_a_restored_card_with_the_owners_text_still_sends_it_as_theirs(tmp_path):
     from doppelgram.transport import TransportError
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
-    real_history = people.history
+    real_typing = people.typing
 
-    async def failing(uid, limit):
-        people.history = real_history
+    async def failing(uid, seconds):
+        people.typing = real_typing
         raise TransportError("network")
-    people.history = failing
+    people.typing = failing
     await m.answer_card(card, "мой текст")  # fails before sending: the card comes back
     assert "Ответьте на карточку ещё раз" in inbox[-1]
     people.incoming(555, "ау?")  # the person writes meanwhile
@@ -1569,3 +1569,27 @@ async def test_a_reply_held_by_quiet_hours_is_written_again_in_the_morning(tmp_p
         await m.tick()
         clock.t += 120
     assert people.sent_texts(555) == ["утренний ответ"]
+
+
+async def test_nothing_is_read_when_the_person_wrote_more_before_the_reply(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    await answered(m, people, clock)
+    people.incoming(555, "давай встретимся?")  # arrives before the queued reply goes out
+    clock.t += 31
+    await m.tick()
+    assert people.read == {} and people.sent_texts(555) == []
+
+
+async def test_ignore_mode_does_not_resume_a_cut_short_triage(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve")
+    people.incoming(777, "привет)")
+    await m.on_stranger(PersonRef(777, None, "Лена"))
+    m.store.update(777, due_at=None)
+    await m.command("chat_mode", "strangers:ignore")
+    await m.startup()
+    clock.t += 60
+    await m.tick()
+    assert not any("Вам впервые написал(а)" in t for t in inbox)
