@@ -525,7 +525,27 @@ class PeopleChannel:
     async def mark_read(self, user_id: int, max_id: int) -> None:
         await _call(self.client.send_read_acknowledge(user_id, max_id=max_id))
 
-    BACKLOG_DIALOGS = 300
+    BACKLOG_PAGE = 100
+
+    async def _recent_dialogs(self, since: float) -> list:
+        """All dialogs with activity since `since`, page by page (dialogs come newest first; pinned ones may
+        be older, so only an unpinned old dialog ends the scan)."""
+        found: list = []
+        try:
+            async for d in self.client.iter_dialogs():
+                date = getattr(d, "date", None)
+                if date is not None and date.timestamp() < since and not getattr(d, "pinned", False):
+                    break
+                found.append(d)
+        except tg_errors.FloodWaitError as exc:
+            raise RateLimited(float(exc.seconds)) from exc
+        except _RESTRICTED_ERRORS as exc:
+            raise AccountRestricted(type(exc).__name__) from exc
+        except tg_errors.RPCError as exc:
+            raise TransportError(f"{type(exc).__name__}: {exc}") from exc
+        except (TimeoutError, ConnectionError, OSError) as exc:
+            raise TransportError(f"network: {exc}") from exc
+        return found
 
     async def backlog(self, days: int):
         """Private chats with unknown people whose last message is theirs and unread (recent first)."""
@@ -535,7 +555,7 @@ class PeopleChannel:
 
         since = _time.time() - days * 86400
         out = []
-        for d in await _call(self.client.get_dialogs(limit=self.BACKLOG_DIALOGS)):
+        for d in await self._recent_dialogs(since):
             user, msg = d.entity, d.message
             if not getattr(d, "is_user", False) or not is_stranger_candidate(user):
                 continue

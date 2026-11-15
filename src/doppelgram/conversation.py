@@ -846,7 +846,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not self.enabled or self.stopped:
             return
         now = self.clock()
-        led = [p for p in self.store.people() if p.state == "active" and p.due_at is None]
+        led = [p for p in self.store.people() if p.due_at is None and (
+            p.state == "active" or (p.state == "new" and self.store.open_card(p.user_id) is None))]
+        # (a stranger whose triage was cut short by a restart has neither a due time nor a card)
         for i, p in enumerate(led):
             self.store.update(p.user_id, due_at=now + 30 * i)  # one after another, not all at once
         if self.strangers == "ignore" or self.cfg.backlog_days <= 0:
@@ -1269,8 +1271,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         quiet_end = self._quiet_now()
         if quiet_end is not None:
-            self.store.set_outbox(user_id, upto, messages, quiet_end + self.rng.uniform(60, 1800), approved,
-                                  owner_text)
+            morning = quiet_end + self.rng.uniform(60, 1800)
+            if approved:  # the owner's choice waits for the morning as it is
+                self.store.set_outbox(user_id, upto, messages, morning, approved, owner_text)
+            else:  # the agent's text is written again in the morning, knowing how late it is by then
+                self.store.set(f"redecide:{user_id}", "1")
+                self.store.update(user_id, due_at=morning)
             return
         await self._deliver_queued(person, upto, messages, approved, owner_text)
 
@@ -1319,7 +1325,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         epoch = self._epoch_of(person.user_id) if epoch is None else epoch
         sent = 0
         for i, text in enumerate(messages):
-            if i == 0 and self.cfg.read_receipts and upto:
+            if i == 0 and self.cfg.read_receipts and upto and self._can_send_now(person.user_id, epoch, approved):
                 await self._mark_read(person.user_id, upto)
             try:
                 await self.people.typing(person.user_id, min(12.0, 1.5 + len(text) / 12))
@@ -1367,6 +1373,16 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         return Delivery("sent", sent)
+
+    def _can_send_now(self, user_id: int, epoch: tuple[int, int], approved: bool) -> bool:
+        """The checks of _gate that do not depend on the chat's newest state: if any fails, nothing goes out
+        now, so nothing should be marked as read either."""
+        person = self.store.person(user_id)
+        if self.stopped or person is None or person.state == "blocked" or epoch != self._epoch_of(user_id):
+            return False
+        if not approved and (self.mode != "auto" or person.state != "active" or self._quiet_now() is not None):
+            return False
+        return self.store.sends_since(self.clock() - 3600) < self.cfg.max_sends_per_hour
 
     async def _mark_read(self, user_id: int, max_id: int) -> None:
         """Read their messages, then a short pause before typing, like a person opening the chat."""

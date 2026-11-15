@@ -1506,15 +1506,66 @@ async def test_backlog_keeps_only_unread_chats_people_started_recently():
 
     from doppelgram.telegram import PeopleChannel
 
-    def dialog(uid, *, out=False, unread=1, days_ago=1, **flags):
-        msg = SimpleNamespace(out=out, date=datetime.fromtimestamp(time.time() - days_ago * 86400, UTC))
-        return SimpleNamespace(is_user=True, entity=types.User(id=uid, first_name=f"u{uid}", **flags), message=msg,
-                               unread_count=unread)
+    def at(days_ago):
+        return datetime.fromtimestamp(time.time() - days_ago * 86400, UTC)
+
+    def dialog(uid, *, out=False, unread=1, days_ago=1, pinned=False, **flags):
+        return SimpleNamespace(is_user=True, entity=types.User(id=uid, first_name=f"u{uid}", **flags),
+                               message=SimpleNamespace(out=out, date=at(days_ago)), unread_count=unread,
+                               date=at(days_ago), pinned=pinned)
+
+    other = SimpleNamespace(is_user=False, entity=None, message=None, unread_count=0, date=at(0.1), pinned=False)
 
     class Client:
-        async def get_dialogs(self, limit):
-            return [dialog(1), dialog(2, out=True), dialog(3, unread=0), dialog(4, days_ago=40),
-                    dialog(5, contact=True), dialog(6, bot=True), dialog(42), dialog(7)]
+        def iter_dialogs(self):
+            # an old pinned chat first, 400 group-like dialogs, the candidates, then an old chat ends the scan
+            items = [dialog(9, days_ago=90, pinned=True), *[other] * 400,
+                     dialog(1), dialog(2, out=True), dialog(3, unread=0), dialog(5, contact=True),
+                     dialog(6, bot=True), dialog(42), dialog(7), dialog(4, days_ago=40), dialog(8)]
+
+            async def gen():
+                for d in items:
+                    yield d
+            return gen()
     account = SimpleNamespace(client=Client(), cfg=SimpleNamespace(owner_ids=[42]), channels={7: object()})
     refs = await PeopleChannel(account).backlog(30)
-    assert [r.user_id for r in refs] == [1]
+    assert [r.user_id for r in refs] == [1]  # 8 comes after the old chat 4: the scan stopped there
+
+
+async def test_nothing_is_marked_read_when_the_send_cannot_happen_now(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, max_sends_per_hour=0)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.read == {} and people.sent_texts(555) == []
+
+
+async def test_a_triage_cut_short_by_a_restart_resumes_at_start(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve")
+    people.incoming(777, "привет) я из бибинто")
+    await m.on_stranger(PersonRef(777, None, "Лена"))
+    m.store.update(777, due_at=None)  # the process died in the middle of the triage
+    await m.startup()
+    clock.t += 1
+    await m.tick()
+    assert "Вам впервые написал(а) Лена" in inbox[-1]
+
+
+async def test_a_reply_held_by_quiet_hours_is_written_again_in_the_morning(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, quiet_hours="00:00-09:00")
+    clock.t = 1_800_000_000 - (1_800_000_000 % 86400) + 3600  # 01:00 UTC
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["ночной ответ"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()  # quiet hours: not sent
+    m.llm.reply = {"action": "reply", "messages": ["утренний ответ"]}
+    clock.t += 9 * 3600
+    for _ in range(3):
+        await m.tick()
+        clock.t += 120
+    assert people.sent_texts(555) == ["утренний ответ"]
