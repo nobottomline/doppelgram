@@ -168,6 +168,11 @@ class ConversationConfig:
     long_delay_chance: float = 0.15
     long_delay_min_s: float = 1800.0
     long_delay_max_s: float = 9000.0
+    # Coming back to a quiet chat: if the person stops answering, one light message after
+    # follow_up_min_h..follow_up_max_h hours (or when the agent promised to write), never two in a row.
+    follow_ups: bool = True
+    follow_up_min_h: float = 20.0
+    follow_up_max_h: float = 60.0
     read_receipts: bool = True  # their messages are marked as read when the agent answers (not before)
     backlog_days: int = 30  # at start: unanswered chats people started in the last N days are triaged (0: off)
     quiet_hours: str = ""  # "01:00-09:00" in `timezone`: no messages are sent then

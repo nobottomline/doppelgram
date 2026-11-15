@@ -1389,7 +1389,7 @@ async def test_a_lost_send_is_recognised_even_if_the_owner_wrote_more_after_it(t
         raise Crash()
     m.store.commit_send = crash
     with pytest.raises(Crash):
-        await m.answer_card(card, "в субботу в шесть")
+        await m.answer_card(card, "!в субботу в шесть")  # the owner's own words, as they are
     people.owner_writes(555, "у входа в парк")  # written directly while the agent was down
     restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
     clock.t += 61
@@ -1675,3 +1675,111 @@ async def test_a_meeting_draft_carries_its_own_quote_and_four_messages(tmp_path)
     assert "в шесть" in inbox[-1] and m.store.get("reply_to:555") is None
     await m.answer_card(9000 + len(inbox), "ок")
     assert people.sent_texts(555) == ["давай", "в субботу", "на кг", "в шесть"] and people.replies[0] is None
+
+
+# ------------------------------------------------------------------ plan, ending, follow-ups, meetings
+async def test_the_prompt_asks_for_a_plan_and_psychology(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"], "memory": "план: " + "а" * 3000}
+    await answered(m, people, clock)
+    system = m.llm.calls[-1][0]["content"]
+    assert "Your plan for this person" in system and "End on a high" in system and "hold" in system
+    assert len(m.store.person(555).memory) <= 2500
+
+
+async def test_a_quiet_chat_gets_one_light_follow_up(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, follow_up_min_h=24,
+                                   follow_up_max_h=24)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет, как день?"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["привет, как день?"]
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["кстати, как прошёл экзамен?"]}
+                                if "## Follow-up" in msgs[1]["content"] else {"action": "wait"})
+    clock.t += 23 * 3600
+    await m.tick()
+    assert people.sent_texts(555) == ["привет, как день?"]  # not yet
+    clock.t += 2 * 3600
+    for _ in range(3):
+        await m.tick()
+        clock.t += 130
+    assert people.sent_texts(555) == ["привет, как день?", "кстати, как прошёл экзамен?"]
+    clock.t += 5 * 86400
+    for _ in range(3):
+        await m.tick()
+        clock.t += 130
+    assert len(people.sent_texts(555)) == 2  # never two in a row without an answer
+
+
+async def test_no_follow_up_when_they_answered_or_the_model_lets_it_be(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, follow_up_min_h=24,
+                                   follow_up_max_h=24)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    m.llm.reply = {"action": "wait"}  # a cold chat: let it be
+    clock.t += 25 * 3600
+    for _ in range(2):
+        await m.tick()
+        clock.t += 130
+    assert people.sent_texts(555) == ["привет"] and m.store.get("follow_up:555") is None
+
+
+async def test_a_promise_to_write_later_is_kept(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "ахах, ладно")
+    m.llm.reply = {"action": "reply", "messages": ["ладно, побежал на тренировку, вечером напишу"], "next_check_h": 4}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    due = float(m.store.get("follow_up:555"))
+    assert 3.9 * 3600 < due - clock() < 4.1 * 3600
+
+
+async def test_a_meeting_gets_a_holding_reply_and_free_times_for_the_owner(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "давай встретимся на выходных?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["давай, гляну расписание и напишу"],
+                   "slots": "суббота после 14, воскресенье весь день", "messages": ["давай в субботу на кг?"]}
+    await answered(m, people, clock)
+    card = 9000 + len(inbox)
+    assert "Свободно по графику: суббота после 14" in inbox[-1] and "гляну расписание" in inbox[-1]
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["давай, гляну расписание и напишу"]
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18 на кг?"]}
+                                if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
+    await m.answer_card(card, "суббота в 18, кг")
+    assert people.sent_texts(555)[-1] == "в субботу в 18 на кг?" and "Пишу" in " ".join(inbox)
+
+
+async def test_a_holding_reply_never_names_a_time_or_place(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["давай, встретимся в субботу"],
+                   "messages": ["в субботу?"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == [] and "Собеседнику агент ответит" not in inbox[-1]
+
+
+async def test_the_owner_can_still_send_their_own_words_on_a_meeting_card(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "messages": ["давай"]}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "!давай в субботу в шесть у метро")
+    assert people.sent_texts(555) == ["давай в субботу в шесть у метро"]

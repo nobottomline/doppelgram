@@ -155,6 +155,7 @@ reply_delay_min_s = 5           # about as fast as the person answers: seconds i
 reply_delay_max_s = 5400
 long_delay_chance = 0.15        # sometimes a long pause (30-150 min), like a busy person
 read_receipts = true            # their messages become "read" when the agent answers, not before
+follow_ups = true               # a quiet chat gets one light message after 20-60 h (or when promised); never two
 backlog_days = 30               # at start: unanswered chats people started in the last 30 days are triaged
 quiet_hours = "01:00-09:00"
 timezone = "Europe/Moscow"

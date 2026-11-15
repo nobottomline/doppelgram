@@ -249,10 +249,23 @@ How to talk:
 - Timing: the owner is a busy person, not always online. If you answer long after their message (several hours or days), you may open with a short natural reason that fits the owner's life ("сорри, пары были", "только с тренировки"), not every time and never a long story. If they ask why you took long, answer the same way, from the owner's facts and schedule. If they took long themselves, do not complain about it.
 - First message (empty chat): one or two short messages that open with something specific from their profile and an easy question. Never just "привет, как дела", never a compliment on looks.
 
+How people get interested (use it naturally, never mechanically):
+- Curiosity and a little mystery: do not tell everything at once; leave threads open, hint at things the owner will tell "later".
+- Light playfulness: gentle teasing, playful disagreement, inside jokes and callbacks to earlier messages. Never mean.
+- Real attention: remember details, come back to them ("как прошёл тот экзамен?"), show you listened.
+- Balance of investment: give about as much as they give; do not out-write them or chase. The owner has a life (classes, training, plans) and it shows.
+- Warmth and validation without flattery: react to who they are, not to their looks.
+- A light future: "тебе бы там понравилось", "надо будет как-нибудь" before any concrete plan.
+- End on a high: now and then, when the chat is lively and has gone on a while, wrap it up warmly yourself with a real reason from the owner's life ("ладно, побежал на тренировку, вечером напишу") instead of letting it fade. Not when they just asked something important. If you promise to write later, set "next_check_h" so it happens.
+
+Your plan for this person ("memory", updated every turn, in Russian, compact): who they are (character, interests, what lights them up), how they write (pace, length, emoji, humour), what works and what to avoid, what they want (friendship, a date, relationship, intimacy), what the owner already told them, open threads and promises, stage, interest level, and your next move. Follow this plan; revise it when you learn more.
+
 Moving toward the goal:
 - Stages: opening -> getting to know each other -> rapport (jokes, shared interests, they ask questions back) -> the next step from the goal.
-- Suggest the next step only when the chat is clearly warm: several real exchanges, they ask questions back, positive tone. Then propose it simply and concretely, the way the goal describes, as an "escalate"/"meeting" draft. If they hesitate, do not push: keep chatting.
-- Keep track of the stage and their interest in "memory".
+- Suggest the next step only when the chat is clearly warm: several real exchanges, they ask questions back, positive tone. If they hesitate, do not push: keep chatting.
+- A meeting (or a call) is never fixed by you. When they suggest one, or it is time, answer as a busy person: put a short holding reply in "hold" (e.g. "давай, гляну что у меня по расписанию и напишу"), the free times from the owner's schedule that would suit in "slots", and the proposal you would send in "messages"; escalate with category "meeting" (or "call"). The owner decides the time and you will write it.
+
+Coming back to a quiet chat: when you are asked to follow up (see "## Follow-up"), the person has not answered for a while. Send one light message that reopens naturally (a callback, something from the owner's day, a question about theirs), never "why don't you answer" or guilt; or choose "wait" if the chat was cold or they seemed to lose interest.
 
 Messages: 1 to 4 short ones per turn, like a person typing in a messenger: split a thought into a couple of quick messages when that is natural, or send just one. Normally they are plain messages, not replies. Quote one of their messages ("reply_to": its #id) only when you answer something specific they wrote earlier and the chat has moved on since. If an old question no longer matters, you may leave it. If nothing needs an answer, choose "wait".
 
@@ -260,9 +273,12 @@ Answer with ONE JSON object only:
 {"action": "reply" | "wait" | "escalate",
  "messages": ["..."],
  "reply_to": <optional #id of their message to quote with the first message>,
+ "hold": ["<for a meeting or call: a short holding reply to send now>"],
+ "slots": "<for a meeting or call: suitable free times from the owner's schedule, in Russian>",
+ "next_check_h": <optional: hours until you look at this chat again if they do not write (a promise to write later, or a gentle check-in)>,
  "category": "<for escalate: ai_question|meeting|call|money|explicit|contact|minor|media|unclear>",
  "reason": "<short, in Russian>",
- "memory": "<updated notes about this person, in Russian: what they told, what the owner already told, open topics, what they want (friendship, a date, relationship, intimacy), stage, interest level; replaces the previous notes>"}"""
+ "memory": "<your updated plan for this person (see above), in Russian; replaces the previous one>"}"""
 
 _NO_INTIMACY = """
 - Sexual or explicit topics: escalate with category "explicit" and no messages."""
@@ -380,6 +396,9 @@ class ConversationStore:
     def unset(self, key: str) -> None:
         self.db.execute("DELETE FROM kv WHERE key=?", (key,))
 
+    def kv_prefix(self, prefix: str) -> list[tuple[str, str]]:
+        return self.db.execute("SELECT key, value FROM kv WHERE key LIKE ?", (prefix + "%",)).fetchall()
+
     def _person(self, row) -> Person | None:
         if not row:
             return None
@@ -474,9 +493,11 @@ class ConversationStore:
         return self.db.execute("DELETE FROM cards WHERE user_id=? AND kind='draft'", (user_id,)).rowcount
 
     def set_outbox(self, user_id: int, upto: int, messages: list[str], send_at: float,
-                   approved: bool = False, owner_text: bool = False) -> None:
-        """`approved`: the owner said «ок» to it; `owner_text`: the owner wrote it (stored as 2)."""
-        self.drop_cards(user_id)  # one pending action per chat
+                   approved: bool = False, owner_text: bool = False, keep_cards: bool = False) -> None:
+        """`approved`: the owner said «ок» to it; `owner_text`: the owner wrote it (stored as 2).
+        `keep_cards`: a holding reply sent while the owner's card stays open (a meeting)."""
+        if not keep_cards:
+            self.drop_cards(user_id)  # one pending action per chat
         self.db.execute("INSERT OR REPLACE INTO outbox VALUES(?,?,?,?,?)",
                         (user_id, upto, json.dumps(messages, ensure_ascii=False), send_at,
                          2 if owner_text else int(approved)))
@@ -891,6 +912,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                     await self._send_outbox(user_id, upto, messages, approved, owner_text)
                 if self.stopped:
                     return
+            self._due_follow_ups(now)
             for person in self.store.due(now):
                 async with self.lock:
                     try:
@@ -1069,7 +1091,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         new = [m for m in incoming if m.id > person.handled_upto]
         upto = incoming[-1].id if incoming else 0
         first = not history
+        if new:
+            self.store.unset(f"follow_up:{person.user_id}")  # they wrote: no need to come back to them
         if not new and not first:
+            await self._maybe_follow_up(person, history, now)
             return
         card = self.store.open_card(person.user_id)
         if self.store.outbox_owner_text(person.user_id):
@@ -1088,22 +1113,20 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         for m in new:
             category = classify_incoming(m.text, m.media_kind, intimacy=self._intimacy_for(person))
             if category in ("meeting", "call"):
-                # The goal is coming true: prepare an answer for the owner to review. The owner is told even
-                # if the draft cannot be made (budget, model failure).
-                draft: list[str] = []
+                # The goal is coming true: a holding reply now, and the owner decides the time. The owner is told
+                # even if no draft can be made (budget, model failure).
+                drafted: dict = {}
                 self.store.unset(f"reply_to:{person.user_id}")
                 if not self._over_budget(now):
                     try:
-                        _, draft, drafted = parse_reply(await self._compose(person, history, images))
+                        _, _, drafted = parse_reply(await self._compose(person, history, images))
                         self._remember_quote(person.user_id, drafted, history, upto)
                     except LLMError as exc:
                         log.warning("no draft for a meeting offer: %s", exc)
                     fresh = self.store.person(person.user_id)
                     if fresh is None or fresh.state != "active":
                         return  # the owner took over (or blocked) while the draft was being written
-                draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in draft][:4]
-                await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
-                                     written_at=now)
+                await self._meeting(person, history, upto, category, drafted, now)
                 return
             if category:
                 await self._escalate(person, history, upto, category, ESCALATIONS[category], [])
@@ -1121,25 +1144,34 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 self.wake.set()
             return
         if decision.get("memory"):
-            self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 1500))
+            self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 2500))
         if action == "wait":
             self.store.update(person.user_id, handled_upto=upto)
+            if isinstance(decision.get("next_check_h"), (int, float)):  # e.g. after the owner's goodbye
+                self._schedule_follow_up(person.user_id, decision, now)
             return
         messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:4]
         self._remember_quote(person.user_id, decision, history, upto)
         messages = [t[:self.cfg.max_message_chars] for t in messages if t]
         if action == "escalate" or not messages:
             category = str(decision.get("category") or "unclear")
+            if category in ("meeting", "call"):
+                await self._meeting(person, history, upto, category, decision, now)
+                return
             await self._escalate(person, history, upto, category,
                                  str(decision.get("reason") or ESCALATIONS.get(category, "")), messages, written_at=now)
             return
         risky = next((c for c in (classify_outgoing(t, intimacy=self._intimacy_for(person)) for t in messages)
                       if c), None)
+        if risky in ("meeting", "call"):  # the model proposed it in a plain reply: the owner decides the time
+            await self._meeting(person, history, upto, risky, decision, now)
+            return
         if risky:
             await self._escalate(person, history, upto, risky,
                                  f"агент хотел написать то, что решаете вы: {ESCALATIONS.get(risky, risky)}", messages,
                                  written_at=now)
             return
+        self._schedule_follow_up(person.user_id, decision, now)
         if self.mode == "auto":
             delay = self._reply_delay(history)
             self.store.set_outbox(person.user_id, upto, messages, now + delay)
@@ -1147,6 +1179,94 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.wake.set()
         else:
             await self._draft(person, history, upto, messages, written_at=now)
+
+    # --- meetings and coming back to quiet chats ------------------------------------------------
+    async def _meeting(self, person: Person, history, upto: int, category: str, decision: dict, now: float) -> None:
+        """A meeting or a call: a holding reply goes out now (auto mode), the owner gets the free times and
+        the draft, and answers with when they can; the agent then writes it (see _answer_card)."""
+        draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars]
+                 for t in parse_reply(decision)[1]][:4] if decision else []
+        raw_hold = decision.get("hold") if isinstance(decision.get("hold"), list) else []
+        hold = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars]
+                for t in raw_hold if isinstance(t, str) and t.strip()][:2]
+        # A holding reply only says "I'll check": it never names a time, a place or anything the owner decides.
+        hold = [t for t in hold if classify_outgoing(t, intimacy=self._intimacy_for(person)) is None]
+        slots = str(decision.get("slots") or "").strip()[:300]
+        send_hold = bool(hold) and self.mode == "auto"
+        await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
+                             written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
+        if send_hold and self.store.open_card(person.user_id) is not None:
+            self.store.set_outbox(person.user_id, upto, hold, now + self._reply_delay(history), approved=True,
+                                  keep_cards=True)
+            self.wake.set()
+
+    def _schedule_follow_up(self, user_id: int, decision: dict, now: float) -> None:
+        if not self.cfg.follow_ups:
+            return
+        hours = decision.get("next_check_h")
+        if isinstance(hours, (int, float)) and not isinstance(hours, bool) and math.isfinite(hours):
+            hours = min(max(float(hours), 1.0), 96.0)
+        else:
+            hours = self.rng.uniform(self.cfg.follow_up_min_h, self.cfg.follow_up_max_h)
+        self.store.set(f"follow_up:{user_id}", str(now + hours * 3600))
+
+    async def _maybe_follow_up(self, person: Person, history: list[ChatMessage], now: float) -> None:
+        """The person has not answered for a while: one light message to reopen the chat, or let it be."""
+        due = self.store.get(f"follow_up:{person.user_id}")
+        if not self.cfg.follow_ups or due is None or float(due) > now:
+            return
+        self.store.unset(f"follow_up:{person.user_id}")
+        incoming = [m for m in history if not m.outgoing]
+        latest = incoming[-1].id if incoming else 0
+        if (not history or not history[-1].outgoing or not incoming
+                or self.store.get(f"followed:{person.user_id}") == str(latest) or self._over_budget(now)):
+            return  # they wrote last, the chat is empty, or we already came back once since their last message
+        quiet_for = _ago(now - history[-1].date) if history[-1].date else "a while"
+        action, raw, decision = parse_reply(await self._compose(
+            person, history, follow_up=f"The owner's last message was {quiet_for} ago and they have not answered."))
+        fresh = self.store.person(person.user_id)
+        if fresh is None or fresh.state != "active":
+            return
+        if decision.get("memory"):
+            self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 2500))
+        messages = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in raw][:2]
+        if action != "reply" or not messages or any(
+                classify_outgoing(t, intimacy=self._intimacy_for(fresh)) for t in messages):
+            return  # the model let it be (or wanted something the owner decides): no follow-up
+        self.store.set(f"followed:{person.user_id}", str(latest))
+        if self.mode == "auto":
+            self.store.set_outbox(person.user_id, latest, messages, now + self.rng.uniform(5, 120))
+            self.wake.set()
+        else:
+            await self._draft(person, history, latest, messages, written_at=now)
+
+    async def _write_from_instruction(self, person: Person, instruction: str) -> list[str] | None:
+        """The agent's message following the owner's decision about a meeting (time, place, a refusal)."""
+        try:
+            history = await self.people.history(person.user_id, self.cfg.history_messages)
+            history, _ = await self._understand(person, history, set())
+            _, raw, decision = parse_reply(await self._compose(person, history, instruction=instruction))
+        except AccountRestricted:
+            raise
+        except (LLMError, TransportError) as exc:
+            log.warning("cannot write the owner's meeting answer for %s: %s", person.user_id, exc)
+            return None
+        if decision.get("memory"):
+            self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 2500))
+        messages = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in raw][:4]
+        # The owner decided the meeting itself; everything else the agent never sends still applies.
+        risky = [c for c in (classify_outgoing(t, intimacy=self._intimacy_for(person)) for t in messages)
+                 if c not in (None, "meeting", "call")]
+        return messages if messages and not risky else None
+
+    def _due_follow_ups(self, now: float) -> None:
+        for key, value in self.store.kv_prefix("follow_up:"):
+            user_id = int(key.split(":", 1)[1])
+            person = self.store.person(user_id)
+            if person is None or person.state != "active":
+                self.store.unset(key)
+            elif float(value) <= now and person.due_at is None:
+                self.store.update(user_id, due_at=now)
 
     def _remember_quote(self, user_id: int, decision: dict, history: list[ChatMessage], upto: int) -> None:
         """Keep the model's choice of an earlier message to quote with the first message of this answer."""
@@ -1173,7 +1293,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
     def _over_budget(self, now: float) -> bool:
         return self.cfg.daily_budget_usd > 0 and self.store.spend_today(now) >= self.cfg.daily_budget_usd
 
-    async def _compose(self, person: Person, history: list[ChatMessage], images: list[str] | None = None) -> dict:
+    async def _compose(self, person: Person, history: list[ChatMessage], images: list[str] | None = None, *,
+                       instruction: str = "", follow_up: str = "") -> dict:
         about = _read(self.cfg.about_file) or "(the owner has not described themselves yet: say little about yourself)"
         style = [*filter(None, _read(self.cfg.style_file).splitlines()), *self.store.style_examples()]
         lines = []
@@ -1205,6 +1326,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         parts.append(f"## Now\n{local:%A %H:%M} ({self.cfg.timezone}). {_engagement(history)}{timing}")
         parts.append("## Chat so far (oldest first)\n" + ("\n".join(lines) if lines else
                      "(empty: write the first message, based on their profile; no links, no contacts)"))
+        if follow_up:
+            parts.append(f"## Follow-up\n{follow_up} Reopen the chat lightly, or choose \"wait\".")
+        if instruction:
+            parts.append("## The owner's instruction for this answer (follow it; it may set a time, a place or a "
+                         "refusal for the meeting; write it in the owner's voice)\n" + instruction[:500])
         if images:
             parts.append(f"## Pictures\nThe {len(images)} image(s) attached are the pictures from their newest "
                          "messages, in the order of the labels [фото 1], [гифка 2], ... (a frame for gifs and videos). "
@@ -1245,18 +1371,28 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
 
     async def _escalate(self, person: Person, history, upto: int, category: str, reason: str,
-                        messages: list[str], written_at: float | None = None) -> None:
+                        messages: list[str], written_at: float | None = None, kind: str = "escalation",
+                        slots: str = "", hold: list[str] | None = None) -> None:
         # The chat waits for the owner: further messages from the person are not answered meanwhile.
         self.store.drop_cards(person.user_id)
         self.store.drop_outbox(person.user_id)
         self.store.update(person.user_id, state="paused")
         draft = ("\n\nЧерновик агента:\n" + "\n".join(messages)) if messages else ""
-        ctrl = await self.say(f"⚠️ {person.name} ({person.bot}): {reason.rstrip('. ')}.\n{self._context(person, history)}{draft}"
-                              f"\n\nОтветьте своим текстом (уйдёт как есть), "
-                              + ("«ок» (отправить черновик), " if messages else "")
-                              + "«веди» — пусть агент продолжает, «сам» — дальше пишете вы.")
+        if kind == "meeting":
+            ctrl = await self.say(
+                f"📅 {person.name} ({person.bot}): {reason.rstrip('. ')}.\n{self._context(person, history)}"
+                + (f"\n\nСобеседнику агент ответит: «{' '.join(hold)}»" if hold else "")
+                + (f"\nСвободно по графику: {slots}" if slots else "") + draft
+                + "\n\nОтветьте реплаем, когда можете и что ответить («суббота в 18, кг», «не могу на этой неделе, "
+                  "перенеси») — агент напишет сам. " + ("«ок» — отправить черновик, " if messages else "")
+                + "«!текст» — отправить ваш текст как есть, «сам» — дальше пишете вы.")
+        else:
+            ctrl = await self.say(f"⚠️ {person.name} ({person.bot}): {reason.rstrip('. ')}.\n{self._context(person, history)}{draft}"
+                                  f"\n\nОтветьте своим текстом (уйдёт как есть), "
+                                  + ("«ок» (отправить черновик), " if messages else "")
+                                  + "«веди» — пусть агент продолжает, «сам» — дальше пишете вы.")
         if ctrl is not None:
-            self.store.add_card(ctrl, person.user_id, "escalation", upto, messages,
+            self.store.add_card(ctrl, person.user_id, kind, upto, messages,
                                 written_at if written_at is not None else self.clock())
         else:  # the owner never got it: do not leave the chat paused with nobody aware, try again later
             current = self.store.person(person.user_id)
@@ -1268,7 +1404,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not self.store.outbox_is(user_id, upto, messages):
             return  # dropped or replaced since the due list was read (e.g. while another chat was typing)
         person = self.store.person(user_id)
-        if person is None or person.state != "active" or self.stopped:
+        allowed = person is not None and (person.state == "active" or (person.state == "paused" and approved))
+        if not allowed or self.stopped:
             self.store.drop_outbox(user_id)
             return
         if self.store.get(f"redecide:{user_id}") or (not approved and self.store.get(f"unchecked:{user_id}")):
@@ -1290,7 +1427,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if quiet_end is not None:
             morning = quiet_end + self.rng.uniform(60, 1800)
             if approved:  # the owner's choice waits for the morning as it is
-                self.store.set_outbox(user_id, upto, messages, morning, approved, owner_text)
+                self.store.set_outbox(user_id, upto, messages, morning, approved, owner_text, keep_cards=True)
             else:  # the agent's text is written again in the morning, knowing how late it is by then
                 self.store.set(f"redecide:{user_id}", "1")
                 self.store.update(user_id, due_at=morning)
@@ -1302,7 +1439,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         """Deliver a queued series. The outbox row stays until each message is sent (then it is trimmed), so
         a restart resumes the rest; afterwards the row is set to whatever should still be sent, or removed."""
         user_id = person.user_id
-        self.store.set_outbox(user_id, upto, messages, self.clock(), approved, owner_text)  # if dropped above
+        self.store.set_outbox(user_id, upto, messages, self.clock(), approved, owner_text,
+                              keep_cards=True)  # if dropped above
         result = await self._deliver(person, upto, messages, approved=approved, owner_text=owner_text,
                                      from_outbox=True)
         rest = messages[result.sent:]
@@ -1313,14 +1451,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                f"изменился (например, выяснилось, что собеседнику меньше 18).")
             return
         if result.status == "capped":
-            self.store.set_outbox(user_id, upto, rest, self.clock() + 900, approved, owner_text)
+            self.store.set_outbox(user_id, upto, rest, self.clock() + 900, approved, owner_text, keep_cards=True)
         elif result.status == "interrupted":
             # The owner changed something (a setting, this chat's state...): the rest is re-checked against
             # the current state when it comes up again (a takeover of this chat drops it then).
-            self.store.set_outbox(user_id, upto, rest, self.clock(), approved, owner_text)
+            self.store.set_outbox(user_id, upto, rest, self.clock(), approved, owner_text, keep_cards=True)
             self.wake.set()
         elif result.status == "error":
-            self.store.set_outbox(user_id, upto, rest, self.clock() + 120, approved, owner_text)
+            self.store.set_outbox(user_id, upto, rest, self.clock() + 120, approved, owner_text, keep_cards=True)
         else:
             self.store.drop_outbox(user_id)
             if result.status == "send_failed":
@@ -1368,7 +1506,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if status != "ok":
                 if status == "capped" and sent:
                     self.store.set_outbox(person.user_id, upto, messages[i:], self.clock() + 900, approved,
-                                          owner_text)
+                                          owner_text, keep_cards=True)
                 return Delivery(status, sent)
             # A marker of this exact send, cleared together with its record: after a crash in between, the
             # message found in the chat is known to be this one, not an older one with the same words.
@@ -1547,7 +1685,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         ok_word = word in ("ок", "ok", "+", "да")
         # Unknown when the flag came (an older database): treat every agent draft as written before it.
         minor_at = float(self.store.get(f"minor_at:{person.user_id}") or "inf")
-        if (ok_word and card["kind"] in ("draft", "escalation") and card["messages"] and person.minor
+        if (ok_word and card["kind"] in ("draft", "escalation", "meeting") and card["messages"] and person.minor
                 and card["ts"] < minor_at):
             # The agent wrote it before it was known that the person is under 18: never sent on «ок».
             self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
@@ -1557,6 +1695,18 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         # A card restored after a failed send of the owner's own text ("own") stays the owner's text.
         owner_text = not ok_word or card["kind"] == "own"
         messages = card["messages"] if ok_word else [text.strip()]
+        if card["kind"] == "meeting" and not ok_word:
+            if text.strip().startswith("!"):  # the owner's own words, sent as they are
+                messages = [text.strip()[1:].strip()]
+            else:  # the owner says when they can (or cannot): the agent writes it to the person
+                written = await self._write_from_instruction(person, text.strip())
+                if written is None:
+                    self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], card["messages"],
+                                        card["ts"])
+                    await self.say("Не получилось составить ответ, ответьте на карточку ещё раз.")
+                    return
+                messages, owner_text = written, False
+                await self.say(f"Пишу {person.name}: «{' / '.join(messages)}»")
         if not messages:
             self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
             await self.say("Черновика нет — напишите текст сами.")

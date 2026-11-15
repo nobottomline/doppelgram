@@ -165,6 +165,18 @@ Their messages are marked as read only when it answers, a few seconds before typ
 later, it may open with a short reason that fits your life ("сорри, пары были"); asked why it took long, it
 answers the same way.
 
+**A plan for every person.** The agent keeps a compact plan per person (character, interests, how they
+write, what works and what to avoid, what they want, open threads, stage, next move) and follows it: curiosity
+and a little mystery, light teasing and callbacks, real attention to details, matching their investment, a
+light future before any concrete plan. Now and then it ends a lively chat on a high note with a real reason
+("побежал на тренировку, вечером напишу") and keeps the promise. If the person goes quiet after a warm chat,
+it writes once, lightly, after 20-60 hours (`follow_ups`), never twice in a row.
+
+**Meetings.** The agent never fixes a time. When a meeting or call comes up it replies like a busy person
+("гляну расписание и напишу") and sends you a card with free times from your schedule and its draft. Reply to
+the card in plain words ("суббота в 18, кг", "не могу, перенеси на следующую неделю") and it writes that to
+the person; «ок» sends its draft, «!текст» sends your words as they are.
+
 **Chats waiting at start.** When the agent starts (or `/chat вкл`), it looks again at the chats it leads and
 triages unanswered chats people started in the last `backlog_days` days, one after another, like any
 stranger: with `strangers = "lead"` it takes up acquaintances and asks you about the rest.
