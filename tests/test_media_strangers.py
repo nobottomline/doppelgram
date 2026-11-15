@@ -2084,10 +2084,14 @@ def test_only_the_promised_holding_reply_may_miss_the_night_grace(tmp_path):
                                    quiet_hours="01:30-09:00")
     clock.t = at_moscow(3, 1)
     m.store.set("night_ok:555", str(clock.t - 60))
-    m.store.set("hold:555", json.dumps(["гляну расписание и напишу"], ensure_ascii=False))
-    m.store.set_outbox(555, 1, ["гляну расписание и напишу"], clock.t, keep_cards=True)
+    m.store.set("hold:555", json.dumps({"upto": 1, "messages": ["гляну расписание", "ладно"]}, ensure_ascii=False))
+    m.store.set_outbox(555, 1, ["гляну расписание", "ладно"], clock.t, keep_cards=True)
+    assert not m._night_blocked(555)
+    m.store.set_outbox(555, 1, ["ладно"], clock.t, keep_cards=True)  # the rest of the series
     assert not m._night_blocked(555)
     m.store.set_outbox(555, 2, ["а ты где учишься?"], clock.t)  # a regular reply replaced it
+    assert m._night_blocked(555)
+    m.store.set_outbox(555, 2, ["ладно"], clock.t)  # even one that equals the end of the hold
     assert m._night_blocked(555)
 
 

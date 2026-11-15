@@ -1053,7 +1053,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return True
         with contextlib.suppress(ValueError):
             held = json.loads(mark)
-            return isinstance(held, list) and bool(row[1]) and held[-len(row[1]):] == row[1]
+            messages = held.get("messages") if isinstance(held, dict) else None
+            return (held.get("upto") == row[0] and isinstance(messages, list) and bool(row[1])
+                    and messages[-len(row[1]):] == row[1])
         return False
 
     def _night_grace_left(self, ts: float) -> float:
@@ -1316,6 +1318,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 delay = max(min(delay, 180.0, self._night_grace_left(self.clock()) - 45), 1.0)
                 if not first and self._night_lively(history, self.clock()):
                     self.store.set(f"night_ok:{person.user_id}", str(now + delay))
+            self.store.unset(f"hold:{person.user_id}")  # a regular reply replaces any holding reply
             self.store.set_outbox(person.user_id, upto, messages, now + delay)
             self.store.update(person.user_id, handled_upto=upto)
             self.wake.set()
@@ -1343,7 +1346,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                              written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
         if send_hold and self.store.open_card(person.user_id) is not None:
             # The agent's own words, checked like any of its messages; the marker lets them out of a paused chat.
-            self.store.set(f"hold:{person.user_id}", json.dumps(hold, ensure_ascii=False))
+            self.store.set(f"hold:{person.user_id}", json.dumps({"upto": upto, "messages": hold}, ensure_ascii=False))
             delay = self._reply_delay(history)
             if night:  # a lively chat at night: the holding reply goes out within minutes
                 delay = min(delay, 180.0)
