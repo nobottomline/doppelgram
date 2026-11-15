@@ -103,6 +103,16 @@ On Ubuntu, from a checkout of this repository:
 4. `systemctl enable --now doppelgram`, then send `/start` from your other account. `/help` lists everything.
 5. Logs: `journalctl -u doppelgram -f`. State: `data/*.sqlite3`.
 
+Editing on your machine and pushing to the server in one command (over SSH as root or with passwordless sudo):
+
+```sh
+./deploy/push.sh myserver            # about-me, style, conversation, slang, taste, task-*.md: no restart needed
+./deploy/push.sh myserver --config   # also config.toml, then a restart
+./deploy/push.sh myserver --code     # also the committed code (git HEAD), installed with install.sh
+```
+
+Every replaced file is backed up to `data/backup-<time>/` on the server first; `.env` is never sent.
+
 ## Files you edit
 
 | File | What it is |
