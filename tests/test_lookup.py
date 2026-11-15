@@ -464,3 +464,24 @@ async def test_a_skipped_drafts_facts_do_not_ride_on_a_hold_with_the_same_words(
         await m.tick()
     assert people.sent_texts(555) == ["гляну и напишу"]
     assert not any("есть машина" in n for n in inbox if "about-me" in n)
+
+
+
+def test_a_username_with_short_parts_never_reaches_a_search():
+    assert clean_queries(["ann_lee университет", "lee университет", "annual report"], ["ann_lee", "ann", "lee"]) \
+        == ["annual report"]
+
+
+async def test_a_hold_sharing_a_line_with_the_draft_does_not_count_its_facts(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну и напишу"], "slots": "суббота",
+                   "messages": ["гляну и напишу", "у меня своя машина, давай в субботу?"],
+                   "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == ["гляну и напишу"]
+    assert m.store.get("said:555") is None and not any("about-me" in n for n in inbox)

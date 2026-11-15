@@ -55,7 +55,7 @@ def clean_queries(raw, private_words: list[str], limit: int = 2) -> list[str]:
         q = " ".join(q.split())[:MAX_QUERY_CHARS]
         low = q.lower()
         digits = sum(c.isdigit() for c in q)  # a phone number written with spaces
-        words = set(re.findall(r"\w+", low))
+        words = set(re.findall(r"[^\W_]+", low))  # "ann_lee" is the words "ann" and "lee"
         # A short name ("Ян", "Ли") only as a whole word; a longer one by its stem, so declensions count too
         # ("Маша" -> "Машей"). A dropped query costs little: the agent asks the person instead.
         named = any((w in words) if len(w) < 4 else (w[:-1] in low) for w in private)

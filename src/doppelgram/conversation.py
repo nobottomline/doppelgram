@@ -1620,7 +1620,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         """Findings for the model's queries: cached ones, then one web search for the rest. A failed search
         gives "nothing found" (the agent then asks the person), never an error in the chat."""
         names = [person.name, person.username or "", *self.private_names]
-        queries = clean_queries(raw, [part for n in names if n for part in re.split(r"[\s_.-]+", n)])
+        parts = [part for n in names if n for part in re.split(r"[\s_.-]+", n)]
+        queries = clean_queries(raw, [*names, *parts])
         now = self.clock()
         cached = {q: decode(q, self.store.get(f"lookup:{q.lower()}"), now, self.cfg.lookup_cache_h * 3600)
                   for q in queries}
@@ -1652,13 +1653,15 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return [str(f) for f in value if isinstance(f, str)] if isinstance(value, list) else []
 
     def _pend_facts(self, user_id: int, decision: dict, messages: list[str]) -> None:
-        """What these messages say about the owner beyond about-me. It counts as said only once one of them
-        actually goes out (see _commit_facts): a skipped draft or a dropped reply leaves nothing behind."""
+        """What these messages say about the owner beyond about-me. It counts as said only once all of them have
+        actually gone out (see _commit_facts): a skipped draft, a dropped reply or a holding reply that happens to
+        share a line with the draft leaves nothing behind."""
         raw = decision.get("new_facts")
         facts = [scrub_text(" ".join(f.split()), 200) for f in raw if isinstance(f, str) and f.strip()][:3] \
             if isinstance(raw, list) else []
         if facts and messages:
-            self.store.set(f"facts:{user_id}", json.dumps({"texts": messages, "facts": facts}, ensure_ascii=False))
+            self.store.set(f"facts:{user_id}", json.dumps({"texts": messages, "facts": facts, "sent": []},
+                                                          ensure_ascii=False))
         else:
             self.store.unset(f"facts:{user_id}")
 
@@ -1669,7 +1672,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             pending = json.loads(self.store.get(f"facts:{person.user_id}") or "{}")
         except ValueError:
             pending = {}
-        if not isinstance(pending, dict) or text not in (pending.get("texts") or []):
+        texts = pending.get("texts") if isinstance(pending, dict) else None
+        if not isinstance(texts, list) or text not in texts:
+            return
+        sent = [t for t in pending.get("sent") or [] if isinstance(t, str)]
+        if text not in sent:
+            sent.append(text)
+        if not set(texts) <= set(sent):  # the rest of these messages has not gone out yet
+            self.store.set(f"facts:{person.user_id}", json.dumps({**pending, "sent": sent}, ensure_ascii=False))
             return
         self.store.unset(f"facts:{person.user_id}")
         said = self._said(person.user_id)
