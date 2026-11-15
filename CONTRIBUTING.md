@@ -35,8 +35,8 @@ conversation agent at work without Telegram, use `uv run doppelgram -c config.to
 * **A behaviour change comes with a regression test** that fails without it.
 * **Safety rules stay safe by default.** Anything that can pay, send personal data, contact a person or press
   an unknown button must be off or require the owner by default, and must be covered by tests.
-* **Privacy.** Do not store profiles, ages, chat texts, transcripts or other people's photos; log button labels,
-  actions and statuses, not texts.
+* **Privacy.** Do not store other people's photos, ages, chat texts or transcripts; keep stored profile
+  texts to matches and without digits; log button labels, actions and statuses, not texts.
 * **Every automatic send passes the checks.** A new path that sends to a person goes through the conversation
   queue and its send-time gate, so takeovers, minor flags, quiet hours and caps apply to it.
 * Python 3.11+, type hints, `ruff check` clean, line length 120. Keep comments about *why*, not *what*.
