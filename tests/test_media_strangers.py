@@ -2089,3 +2089,17 @@ def test_only_the_promised_holding_reply_may_miss_the_night_grace(tmp_path):
     assert not m._night_blocked(555)
     m.store.set_outbox(555, 2, ["а ты где учишься?"], clock.t)  # a regular reply replaced it
     assert m._night_blocked(555)
+
+
+async def test_a_two_message_holding_reply_goes_out_whole_in_a_paused_chat(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну расписание", "и напишу"],
+                   "slots": "суббота", "messages": ["давай в субботу?"]}
+    await answered(m, people, clock)
+    assert m.store.person(555).state == "paused"
+    for _ in range(4):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555)[-2:] == ["гляну расписание", "и напишу"]

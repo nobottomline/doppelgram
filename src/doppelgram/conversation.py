@@ -1044,14 +1044,16 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return None
 
     def _hold_queued(self, user_id: int) -> bool:
-        """Whether the queued message is the holding reply itself (not a later reply that replaced it)."""
+        """Whether the queued messages are the holding reply itself, or what is left of it while its series goes
+        out (not a later reply that replaced it)."""
         mark, row = self.store.get(f"hold:{user_id}"), self.store.outbox_row(user_id)
         if not mark or row is None:
             return False
         if mark == "1":  # written by an older version, before the text was kept
             return True
         with contextlib.suppress(ValueError):
-            return json.loads(mark) == row[1]
+            held = json.loads(mark)
+            return isinstance(held, list) and bool(row[1]) and held[-len(row[1]):] == row[1]
         return False
 
     def _night_grace_left(self, ts: float) -> float:
