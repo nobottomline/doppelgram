@@ -1046,3 +1046,41 @@ async def test_the_owners_own_text_stays_their_text_after_a_setting_change(tmp_p
         clock.t += 31
         await m.tick()
     assert "мой собственный ответ" in people.sent_texts(555)
+
+
+async def test_a_failed_approved_series_is_not_offered_again_after_a_minor_flag(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
+    real_send, real_history = people.send, people.history
+
+    async def send_once(user_id, text):
+        msg_id = await real_send(user_id, text)
+        people.send = real_send
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+
+        async def failing(uid, limit):
+            people.history = real_history
+            raise TransportError("network")
+        people.history = failing
+        return msg_id
+    people.send = send_once
+    await m.answer_card(card, "ок")
+    assert "остальное не отправляю" in inbox[-1]
+    await m.answer_card(card, "ок")  # the old card is gone
+    assert people.sent_texts(555) == ["привет)"]
+
+
+async def test_a_restored_card_with_the_owners_text_still_sends_it_as_theirs(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
+    real_history = people.history
+
+    async def failing(uid, limit):
+        people.history = real_history
+        raise TransportError("network")
+    people.history = failing
+    await m.answer_card(card, "мой текст")  # fails before sending: the card comes back
+    assert "Ответьте на карточку ещё раз" in inbox[-1]
+    people.incoming(555, "ау?")  # the person writes meanwhile
+    await m.answer_card(card, "ок")
+    assert people.sent_texts(555) == ["мой текст"]

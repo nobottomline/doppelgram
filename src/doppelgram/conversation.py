@@ -273,7 +273,7 @@ CREATE TABLE IF NOT EXISTS sent (msg_id INTEGER NOT NULL, user_id INTEGER NOT NU
 CREATE TABLE IF NOT EXISTS cards (
     control_msg_id INTEGER PRIMARY KEY,     -- the owner-chat message holding a draft or an escalation
     user_id INTEGER NOT NULL,
-    kind TEXT NOT NULL,                     -- draft | escalation
+    kind TEXT NOT NULL,                     -- draft | escalation | stranger | own (the owner's own text)
     upto INTEGER NOT NULL,                  -- incoming message id the card answers
     messages TEXT NOT NULL,                 -- JSON list
     ts REAL NOT NULL
@@ -1336,8 +1336,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self._lead(person)
             await self.say(f"Агент продолжает диалог с {person.name}.")
             return
-        owner_text = word not in ("ок", "ok", "+", "да")
-        messages = [text.strip()] if owner_text else card["messages"]
+        ok_word = word in ("ок", "ok", "+", "да")
+        # A card restored after a failed send of the owner's own text ("own") stays the owner's text.
+        owner_text = not ok_word or card["kind"] == "own"
+        messages = card["messages"] if ok_word else [text.strip()]
         if not messages:
             self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
             await self.say("Черновика нет — напишите текст сами.")
@@ -1382,19 +1384,22 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         elif result.status == "capped":
             if not result.sent:
                 # Keep what the owner actually chose (their own text, if they replaced the draft).
-                self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], messages,
-                                    card["ts"])
+                self.store.add_card(control_msg_id, person.user_id, "own" if owner_text else card["kind"],
+                                    card["upto"], messages, card["ts"])
             await self.say(f"Отправлено {result.sent} из {len(messages)}: сейчас лимит отправки (в час или первых "
                            f"сообщений за день). " + ("Остальное уйдёт позже." if result.sent else
                                                       "Ответьте на эту карточку ещё раз позже."))
+        elif result.status == "error" and redecide:
+            await self.say(f"Сбой сети: отправлено {result.sent} из {len(messages)}. Диалог изменился (например, "
+                           f"выяснилось, что собеседнику меньше 18), остальное не отправляю.")
         elif result.status == "error":
-            if result.sent and not redecide:
+            if result.sent:
                 self.store.set_outbox(person.user_id, card["upto"], messages[result.sent:], self.clock() + 120,
                                       approved=True, owner_text=owner_text)
             else:
                 # Keep what the owner actually chose (their own text, if they replaced the draft).
-                self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], messages,
-                                    card["ts"])
+                self.store.add_card(control_msg_id, person.user_id, "own" if owner_text else card["kind"],
+                                    card["upto"], messages, card["ts"])
             await self.say(f"Сбой сети: отправлено {result.sent} из {len(messages)}. "
                            + ("Остальное повторю сам." if result.sent else "Ответьте на карточку ещё раз позже."))
         elif result.status == "send_failed":
