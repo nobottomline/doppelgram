@@ -1155,8 +1155,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 2500))
         if action == "wait":
             self.store.update(person.user_id, handled_upto=upto)
-            if isinstance(decision.get("next_check_h"), (int, float)):  # e.g. after the owner's goodbye
-                self._schedule_follow_up(person.user_id, decision, now)
+            next_check = decision.get("next_check_h")
+            if isinstance(next_check, (int, float)) and not isinstance(next_check, bool) and math.isfinite(next_check):
+                self._schedule_follow_up(person.user_id, decision, now, after_send=False)
             return
         messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:4]
         self._remember_quote(person.user_id, decision, history, upto)
@@ -1210,7 +1211,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.set_outbox(person.user_id, upto, hold, now + self._reply_delay(history), keep_cards=True)
             self.wake.set()
 
-    def _schedule_follow_up(self, user_id: int, decision: dict, now: float) -> None:
+    def _schedule_follow_up(self, user_id: int, decision: dict, now: float, *, after_send: bool = True) -> None:
         if not self.cfg.follow_ups:
             return
         hours = decision.get("next_check_h")
@@ -1218,24 +1219,32 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             hours = min(max(float(hours), 1.0), 96.0)
         else:
             hours = self.rng.uniform(self.cfg.follow_up_min_h, self.cfg.follow_up_max_h)
-        # Counted from when the answer actually goes out (see _deliver), not from when it was written.
-        self.store.set(f"follow_up_after:{user_id}", str(hours * 3600))
-        self.store.unset(f"follow_up:{user_id}")
+        if after_send:  # count from actual delivery; a queued answer may wait hours
+            self.store.set(f"follow_up_after:{user_id}", str(hours * 3600))
+            self.store.unset(f"follow_up:{user_id}")
+        else:  # an explicit wait sends nothing, so its later check starts now
+            self.store.set(f"follow_up:{user_id}", str(now + hours * 3600))
+            self.store.unset(f"follow_up_after:{user_id}")
 
     async def _maybe_follow_up(self, person: Person, history: list[ChatMessage], now: float) -> None:
         """The person has not answered for a while: one light message to reopen the chat, or let it be."""
         due = self.store.get(f"follow_up:{person.user_id}")
         if not self.cfg.follow_ups or due is None or float(due) > now:
             return
-        self.store.unset(f"follow_up:{person.user_id}")
         incoming = [m for m in history if not m.outgoing]
         latest = incoming[-1].id if incoming else 0
-        if (not history or not history[-1].outgoing or not incoming
+        if (not history or not incoming
                 or self.store.get(f"followed:{person.user_id}") == str(latest) or self._over_budget(now)):
-            return  # they wrote last, the chat is empty, or we already came back once since their last message
+            self.store.unset(f"follow_up:{person.user_id}")
+            return  # the chat is empty, or we already came back once since their last message
         quiet_for = _ago(now - history[-1].date) if history[-1].date else "a while"
-        action, raw, decision = parse_reply(await self._compose(
-            person, history, follow_up=f"The owner's last message was {quiet_for} ago and they have not answered."))
+        context = (f"The owner's last message was {quiet_for} ago and they have not answered."
+                   if history[-1].outgoing else
+                   f"The person last wrote {quiet_for} ago. You chose to wait before replying; revisit their messages now.")
+        action, raw, decision = parse_reply(await self._compose(person, history, follow_up=context))
+        # A temporary model error leaves the timer for the retry; consume only the request we completed.
+        if self.store.get(f"follow_up:{person.user_id}") == due:
+            self.store.unset(f"follow_up:{person.user_id}")
         fresh = self.store.person(person.user_id)
         if fresh is None or fresh.state != "active":
             return
@@ -1765,8 +1774,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         current = self.store.person(person.user_id)
         if current is None or current.state in ("owner", "blocked") or answer_epoch != self._epoch_of(person.user_id):
+            # This answer has not queued anything yet; an existing row belongs to newer work.
             # Something happened while the answer was prepared (/self, a setting, another answer).
-            self.store.drop_outbox(person.user_id)
             if current is not None and current.state == "paused" and self.store.open_card(person.user_id) is None:
                 # The chat still waits for the owner: give the card back so it is not stuck.
                 self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])

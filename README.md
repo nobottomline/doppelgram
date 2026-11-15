@@ -227,6 +227,9 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   были"), and it answers "why so long?" the same way.
 - **Quiet chats.** If a warm chat goes quiet, it writes once, lightly, after 20–60 hours (`follow_ups`), or
   when it promised to (the model may choose 1–96 hours); never twice in a row.
+  The delay starts when the answer is delivered. If the model explicitly postpones an answer, its later
+  check starts from that decision; a new message or owner takeover cancels the old check. A temporary model
+  error preserves a scheduled check for retry.
 - **Photos, stickers, voice.** Photos and frames of gifs, videos and video notes are shown to the model;
   stickers are read as their emoji; voice messages and video notes are transcribed by an audio model on the
   `[llm]` endpoint and key (`speech_model`, default `google/gemini-3.8-flash`; the endpoint must accept

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from dataclasses import replace
 from datetime import UTC
 
 import pytest
@@ -1699,3 +1700,104 @@ async def test_a_send_cut_by_a_crash_is_found_even_after_many_new_messages(tmp_p
     clock.t += 61
     await restarted.tick()
     assert people.sent_texts(555).count("в субботу в шесть") == 1
+
+
+async def test_an_explicit_wait_revisits_the_handled_message_at_the_requested_time(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "сейчас занята, напиши позже")
+    m.llm.reply = {"action": "wait", "next_check_h": 1}
+    await answered(m, people, clock)
+    assert len(m.llm.calls) == 1 and people.sent_texts(555) == []
+    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
+    clock.t += 3500
+    await m.tick()
+    assert len(m.llm.calls) == 1
+    clock.t += 101
+    await m.tick()
+    assert len(m.llm.calls) == 2
+    assert "You chose to wait before replying" in m.llm.calls[-1][1]["content"]
+    clock.t += 121
+    await m.tick()
+    assert people.sent_texts(555) == ["как прошёл день?"]
+    clock.t += 5 * 86400
+    await m.tick()
+    assert len(m.llm.calls) == 2  # one deferred reply, never a repeated nudge
+
+
+@pytest.mark.parametrize("event", ["incoming", "self"])
+async def test_a_later_message_or_takeover_cancels_the_deferred_check(tmp_path, event):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "я занята")
+    m.llm.reply = {"action": "wait", "next_check_h": 1}
+    await answered(m, people, clock)
+    if event == "incoming":
+        m.llm.reply = {"action": "wait"}
+        people.incoming(555, "я пока ещё занята")
+        await answered(m, people, clock)
+    else:
+        await m.command("self", 555)
+    calls = len(m.llm.calls)
+    clock.t += 7200
+    await m.tick()
+    assert len(m.llm.calls) == calls and people.sent_texts(555) == []
+    assert m.store.get("follow_up:555") is None
+
+
+async def test_an_old_instruction_does_not_delete_a_newer_approved_answer(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в шесть?"]}
+                                if "owner's instruction" in msgs[1]["content"] else
+                                {"action": "reply", "messages": ["новый черновик"]})
+    real_notify = m._notify
+    newer = {}
+
+    async def notify(text, image=None):
+        if text.startswith("Пишу"):
+            m._notify = real_notify
+            await m.command("lead", 555)
+            await m.command("chat_mode", "approve")
+            people.incoming(555, "как прошёл день?")
+            await answered(m, people, clock)
+            m.cfg = replace(m.cfg, quiet_hours="00:00-23:59")
+            await m.answer_card(m.store.open_card(555)["control_msg_id"], "ок")
+            newer["row"] = m.store.outbox_row(555)
+        return await real_notify(text, image)
+    m._notify = notify
+    await m.answer_card(card, "суббота в шесть")
+    assert newer["row"] is not None and newer["row"][1] == ["новый черновик"]
+    assert m.store.outbox_row(555) == newer["row"]
+    m.cfg = replace(m.cfg, quiet_hours="")
+    clock.t += 2 * 86400
+    await m.tick()
+    assert people.sent_texts(555) == ["новый черновик"]
+
+
+@pytest.mark.parametrize("deferred_reply", [False, True])
+async def test_a_scheduled_check_survives_a_temporary_model_error(tmp_path, deferred_reply):
+    from doppelgram.llm import LLMError
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "привет")
+    m.llm.reply = ({"action": "wait", "next_check_h": 1} if deferred_reply else
+                   {"action": "reply", "messages": ["позже напишу"], "next_check_h": 1})
+    await answered(m, people, clock)
+    if not deferred_reply:
+        clock.t += 31
+        await m.tick()
+    calls = len(m.llm.calls)
+
+    def unavailable(messages):
+        raise LLMError("temporary failure")
+    m.llm.reply = unavailable
+    clock.t += 3601
+    await m.tick()
+    assert len(m.llm.calls) == calls + 1
+    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
+    clock.t += m.RETRY_S + 1
+    await m.tick()
+    clock.t += 121
+    await m.tick()
+    assert len(m.llm.calls) == calls + 2
+    assert people.sent_texts(555)[-1] == "как прошёл день?"
