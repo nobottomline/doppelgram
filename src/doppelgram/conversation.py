@@ -347,6 +347,9 @@ class ConversationStore:
         self.db.execute("INSERT INTO kv VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                         (key, value))
 
+    def unset(self, key: str) -> None:
+        self.db.execute("DELETE FROM kv WHERE key=?", (key,))
+
     def _person(self, row) -> Person | None:
         if not row:
             return None
@@ -565,8 +568,9 @@ class ConversationManager:
         except AccountRestricted as exc:
             self._trip(str(exc))
             return
-        except TransportError as exc:  # incl. a flood wait: recent owner messages are still caught later
+        except TransportError as exc:  # incl. a flood wait: checked again before the first answer
             log.warning("cannot check earlier messages with %s: %s", ref.user_id, exc)
+            self.store.set(f"unchecked:{ref.user_id}", "1")
             talking = False
         if talking:  # the owner already writes to this person: the agent stays out
             self.store.update(ref.user_id, state="owner")
@@ -894,6 +898,24 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         if person is None or person.state != "active":
             return
+        if self.store.get(f"unchecked:{person.user_id}"):
+            # Whether the owner already writes here could not be checked at the match: check before answering.
+            try:
+                talking = await self.people.wrote_before(person.user_id)
+            except RateLimited as exc:
+                self.store.update(person.user_id, due_at=self.clock() + exc.seconds + 5)
+                return
+            except AccountRestricted:
+                raise
+            except TransportError:
+                self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
+                return
+            self.store.unset(f"unchecked:{person.user_id}")
+            if talking and not self.store.sent_ids(person.user_id):
+                self.store.update(person.user_id, state="owner")
+                await self.say(f"Вы уже переписываетесь с {person.name}: агент не вмешивается. "
+                               f"Передать агенту: /lead {person.user_id}")
+                return
         history = await self.people.history(person.user_id, self.cfg.history_messages)
         if self._foreign(person, history):
             self.store.update(person.user_id, state="owner")
@@ -929,6 +951,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                         draft = parse_reply(await self._compose(person, history, images))[1]
                     except LLMError as exc:
                         log.warning("no draft for a meeting offer: %s", exc)
+                    fresh = self.store.person(person.user_id)
+                    if fresh is None or fresh.state != "active":
+                        return  # the owner took over (or blocked) while the draft was being written
                 draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in draft][:3]
                 await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t])
                 return
@@ -1107,7 +1132,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 return Delivery("error", sent)
             # ---- synchronous gate: nothing below may await before people.send() ----
             status, latest = self._gate(person.user_id, upto, history, epoch, approved=approved,
-                                        owner_text=owner_text, first_of_batch=i == 0)
+                                        owner_text=owner_text, first_of_batch=i == 0, text=text)
             if status != "ok":
                 if status == "capped" and sent:
                     self.store.set_outbox(person.user_id, upto, messages[i:], self.clock() + 900, approved)
@@ -1129,13 +1154,19 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return Delivery("sent", sent)
 
     def _gate(self, user_id: int, upto: int, history: list[ChatMessage], epoch: int, *, approved: bool,
-              owner_text: bool, first_of_batch: bool) -> tuple[str, int]:
+              owner_text: bool, first_of_batch: bool, text: str | None = None) -> tuple[str, int]:
         """Synchronous pre-send check. Returns (status, latest incoming id)."""
         incoming = [m for m in history if not m.outgoing]
         latest = incoming[-1].id if incoming else 0
         person = self.store.person(user_id)
         if self.stopped or person is None or person.state == "blocked":
             return "stopped", latest
+        if (not approved and text is not None
+                and classify_outgoing(text, intimacy=self._intimacy_for(person)) is not None):
+            # Written before something changed (a minor flag, intimacy switched off): decide again.
+            self.store.update(user_id, due_at=self.clock())
+            self.wake.set()
+            return "declined", latest
         if epoch != self.epoch:
             return "interrupted", latest
         if not approved:

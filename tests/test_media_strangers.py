@@ -625,3 +625,57 @@ def test_explicit_words_in_context(text, kind):
 def test_payment_promises_with_words_between(text, money):
     from doppelgram.conversation import classify_outgoing
     assert (classify_outgoing(text) == "money") is money
+
+
+async def test_a_minor_flag_during_typing_stops_the_send(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["ты такая сексуальная"]}
+    await answered(m, people, clock)  # queued
+    real_typing = people.typing
+
+    async def typing_then_flag(user_id, seconds):
+        m.store.update(555, minor=1)
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_flag
+    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "ты такая сексуальная" not in people.sent_texts(555)
+
+
+async def test_an_unchecked_match_chat_is_checked_before_the_first_answer(tmp_path):
+    from doppelgram.transport import RateLimited
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=5)
+    people.owner_writes(555, "привет, давно не общались")
+    for i in range(10):
+        people.incoming(555, f"сообщение {i}")
+    real = people.wrote_before
+    calls = {"n": 0}
+
+    async def flaky(user_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimited(30)
+        return await real(user_id)
+    people.wrote_before = flaky
+    await match(m)
+    m.on_message(555)
+    clock.t += 11
+    await m.tick()
+    assert m.store.person(555).state == "owner" and people.sent_texts(555) == ["привет, давно не общались"]
+
+
+async def test_a_takeover_while_a_meeting_draft_is_written_wins(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "давай встретимся в субботу?")
+
+    def draft(messages):
+        m.store.update(555, state="owner")  # /self while the model writes the draft
+        return {"action": "reply", "messages": ["давай, в субботу на кг"]}
+    m.llm.reply = draft
+    await answered(m, people, clock)
+    assert m.store.person(555).state == "owner" and not any("речь о встрече" in t for t in inbox)
