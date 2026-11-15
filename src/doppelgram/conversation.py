@@ -1407,7 +1407,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                          epoch=epoch, from_outbox=True)
         rest = messages[result.sent:]
         redecide = bool(self.store.get(f"redecide:{person.user_id}"))  # e.g. a minor flag learnt meanwhile
-        keep_rest = (result.status == "interrupted" and rest and not redecide
+        keep_rest = (result.status == "interrupted" and rest and (owner_text or not redecide)
                      and (self.store.person(person.user_id) or person).state in ("active", "paused"))
         if keep_rest:  # a setting changed mid-series: the queue sends the rest after re-checking
             self.store.set_outbox(person.user_id, card["upto"], rest, self.clock(), approved=True,
@@ -1463,6 +1463,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if epoch != self._epoch_of(person.user_id):
             return False  # the owner did something else with this chat meanwhile (/self, an answer): that wins
         self.store.unset(f"unchecked:{person.user_id}")  # the owner decided: no earlier-chat check
+        self.allowed.add(person.user_id)  # e.g. a stranger still waiting for a decision
+        if person.state == "new":
+            self.store.drop_cards(person.user_id)  # the stranger card is answered by this
         outgoing = [m.id for m in history if m.outgoing]
         incoming = [m.id for m in history if not m.outgoing]
         self.store.update(person.user_id, state="active", owner_upto=max(outgoing, default=0),

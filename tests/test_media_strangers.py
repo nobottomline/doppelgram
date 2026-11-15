@@ -1224,3 +1224,36 @@ async def test_lead_on_an_escalation_survives_a_network_error(tmp_path):
     assert "ещё раз" in inbox[-1]
     await m.answer_card(card, "веди")
     assert m.store.person(555).state == "active"
+
+
+async def test_the_owners_own_text_survives_a_minor_flag_during_typing(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
+    real_typing = people.typing
+
+    async def typing_then_minor(user_id, seconds):
+        people.typing = real_typing
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_minor
+    await m.answer_card(card, "мой текст")
+    for _ in range(2):
+        clock.t += 31
+        await m.tick()
+    assert "мой текст" in people.sent_texts(555)
+
+
+async def test_lead_on_a_waiting_stranger_lets_the_agent_answer(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto")
+    await stranger_writes(m, people, clock)
+    await m.command("lead", 777)
+    m.llm.reply = {"action": "reply", "messages": ["привет) да, было дело"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    people.incoming(777, "как дела?")
+    m.on_message(777)
+    m.llm.reply = {"action": "reply", "messages": ["норм, ты как?"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert people.sent_texts(777) == ["привет) да, было дело", "норм, ты как?"]
