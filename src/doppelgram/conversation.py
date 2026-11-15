@@ -90,11 +90,13 @@ _EXPLICIT_RE = re.compile(r"(секс|интим|нюдс|nudes|голая|го�
 _CONTACT_OUT_RE = re.compile(r"(https?://|t\.me/|www\.|@\w{4,}|(?:\+7|8)[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-]*\d{2}"
                              r"[\s\-]*\d{2}|vk\.com)", re.I)
 _PAY_OUT_RE = re.compile(r"(переведу|скину\s+(?:деньг|на\s+карт|\d)|номер\s+карты|реквизит|одолжу|займу\s+тебе|"
-                         r"оплачу|заплачу|\d+\s*(?:₽|руб|р\b|к\b|тыс))", re.I)
+                         r"оплачу|заплачу)", re.I)
+_NEGATED_RE = re.compile(r"\b(?:не|ни)\s+\w+", re.I)  # "не заплачу" is a refusal, not a promise
 # Graphic sexual words: never sent by the agent and never answered by it, even with intimacy allowed (the
 # owner takes over). Flirting and talking about intimacy in general words stay with the agent.
-_GRAPHIC_RE = re.compile(r"(член|хуй|хуё|пизд|ебат|ебл|ебу\b|трах|кончи|сосать|отсос|минет|куни|дроч|анал|вагин|"
-                         r"оргазм|сиськ|голая\s+фот|нюдс|nudes|секстинг)", re.I)
+_GRAPHIC_RE = re.compile(r"\b(?:ху[йё]|пизд|еба[тл]|ебл|ебу\b|трах(?:а|н|ну|ать|ал|ни)|конч(?:и|ить|ил|ила|у)\b|"
+                         r"соса(?:ть|ла|л|ешь)\b|отсос|минет|кунилинг|куни\b|дроч|анал(?:\b|ьн)|вагин|оргазм|сиськ|"
+                         r"голая\s+фот|нюдс|секстинг)|\bnudes\b", re.I)
 _SPAM_RE = re.compile(r"(https?://|t\.me/|www\.|заработ|доход\w*\s+от|крипт|инвест|казино|ставк[иа]|бонус|промокод|"
                       r"подпис(?:ывайся|аться)\s+на|переходи\s+по|акци[яи]|скидк|выигр)", re.I)
 _CALL_RE = re.compile(r"(созвон|позвон|звонок|по\s+видео|видеосвяз|набер[уиё])", re.I)
@@ -121,8 +123,9 @@ def classify_incoming(text: str, media_kind: str | None, *, intimacy: bool = Fal
     the owner unless they allowed them (`intimacy`); a minor always does."""
     if media_kind:  # the conversation agent does not look at media: the owner decides
         return "media"
-    checks = [("ai_question", _AI_RE), ("ai_question", _HUMAN_RE), ("minor", _MINOR_RE),
-              ("explicit", _EXPLICIT_RE if not intimacy else _GRAPHIC_RE)]
+    checks = [("ai_question", _AI_RE), ("ai_question", _HUMAN_RE), ("minor", _MINOR_RE), ("explicit", _GRAPHIC_RE)]
+    if not intimacy:
+        checks.append(("explicit", _EXPLICIT_RE))
     checks += [("meeting", _MEET_RE), ("call", _CALL_RE)]
     for name, rx in checks:
         if rx.search(text or ""):
@@ -134,8 +137,11 @@ def classify_outgoing(text: str, *, intimacy: bool = False) -> str | None:
     """What the agent itself wants to write that only the owner may send: a meeting or a call, contacts, a
     promise of money, anything about being a bot (it must never deny it, so it does not discuss it at all),
     and intimate topics unless the owner allowed them."""
-    checks = [("ai_question", _AI_RE), ("money", _PAY_OUT_RE), ("contact", _CONTACT_OUT_RE),
-              ("explicit", _EXPLICIT_RE if not intimacy else _GRAPHIC_RE)]
+    if _PAY_OUT_RE.search(_NEGATED_RE.sub(" ", text or "")):
+        return "money"
+    checks = [("ai_question", _AI_RE), ("contact", _CONTACT_OUT_RE), ("explicit", _GRAPHIC_RE)]
+    if not intimacy:
+        checks.append(("explicit", _EXPLICIT_RE))
     checks += [("meeting", _MEET_RE), ("call", _CALL_RE)]
     for name, rx in checks:
         if rx.search(text or ""):
@@ -542,8 +548,10 @@ class ConversationManager:
                 self.store.update(ref.user_id, card=scrub_text(card))
             if score is not None and known.score is None:
                 self.store.update(ref.user_id, score=score)
-            if minor:
-                self.store.update(ref.user_id, minor=1)
+            if minor:  # learnt later: no first message, nothing already queued goes out
+                self.store.update(ref.user_id, minor=1, score=None)
+                self.store.drop_outbox(ref.user_id)
+                self.store.drop_cards(ref.user_id)
         if known is not None:
             return
         self.allowed.add(ref.user_id)
@@ -623,16 +631,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
     async def _triage(self, person: Person) -> None:
         """A stranger's first messages: drop existing chats and spam, take up acquaintances (lead mode),
         ask the owner about the rest."""
-        epoch = self.epoch
         history = await self.people.history(person.user_id, self.cfg.history_messages)
         if not history or await self.people.wrote_before(person.user_id):
-            self._block(person.user_id)  # an existing chat (the owner wrote there, ever): never ours
+            if self._still_new(person.user_id):
+                self._block(person.user_id)  # an existing chat (the owner wrote there, ever): never ours
             return
         history, _ = await self._understand(person, history, set())
         text = "\n".join(m.text for m in history if m.text)
         if _SPAM_RE.search(text):
             log.info("first messages from %s look like spam: ignored", person.user_id)
-            self._block(person.user_id)
+            if self._still_new(person.user_id):
+                self._block(person.user_id)
             return
         bio = ""
         try:
@@ -641,7 +650,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             raise  # the breaker and the retry queue handle these
         except TransportError as exc:
             log.info("no bio for %s: %s", person.user_id, exc)
-        minor = bool(_MINOR_RE.search(text) or _AGE_UNDER_18_RE.search(bio))
+        minor = bool(_MINOR_RE.search(text) or _MINOR_RE.search(bio) or _AGE_UNDER_18_RE.search(bio))
         if bio:
             self.store.update(person.user_id, card=scrub_text(bio))
         if minor:
@@ -649,8 +658,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         kind, reason = "unclear", ""
         if self.strangers == "lead" and not minor and not self._over_budget(self.clock()):
             kind, reason = await self._classify_stranger(text, bio)
-        current = self.store.person(person.user_id)
-        if epoch != self.epoch or current is None or current.state != "new":
+        if not self._still_new(person.user_id):
             return  # the owner decided meanwhile (/self, /lead, a card answer): theirs wins
         if kind == "spam":
             self._block(person.user_id)
@@ -674,6 +682,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.add_card(ctrl, person.user_id, "stranger", upto, [], self.clock())
         else:
             self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
+
+    def _still_new(self, user_id: int) -> bool:
+        current = self.store.person(user_id)
+        return current is not None and current.state == "new"
 
     async def _classify_stranger(self, text: str, bio: str) -> tuple[str, str]:
         failures: list = []

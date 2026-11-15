@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 
 import pytest
-from test_conversation import ChatMessage, ConversationManager, PersonRef, make, match
+from test_conversation import ChatMessage, ConversationManager, PersonRef, classify_incoming, make, match
 
 from doppelgram.llm import LLMResult
 from doppelgram.speech import SpeechError, Transcript
@@ -486,3 +486,100 @@ async def test_a_paid_answer_without_a_transcript_counts_against_the_budget():
     with pytest.raises(SpeechError):
         await t.transcribe(opus_voice(0.5), failures=failures)
     assert [f.cost_usd for f in failures] == [0.5]
+
+
+# ------------------------------------------------------------------ second review regressions
+async def test_wrote_before_asks_the_server_for_the_accounts_own_messages():
+    from telethon.tl import functions, types
+
+    from doppelgram.telegram import PeopleChannel
+
+    class Client:
+        async def __call__(self, request):
+            self.request = request
+            return types.messages.Messages(messages=[], topics=[], chats=[], users=[])
+
+    class Account:
+        client = Client()
+    channel = PeopleChannel(Account())
+    assert await channel.wrote_before(777) is False
+    req = Account.client.request
+    assert isinstance(req, functions.messages.SearchRequest) and isinstance(req.from_id, types.InputPeerSelf)
+
+
+async def test_a_later_minor_match_drops_what_was_queued(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True)
+    await match(m)  # score 10: a first message gets queued
+    await m.tick()
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+    clock.t += 31
+    await m.tick()
+    person = m.store.person(555)
+    assert person.minor and person.score is None and people.sent_texts(555) == []
+
+
+async def test_a_bio_saying_under_18_flags_a_stranger(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", strangers="lead")
+    people.bio = "мне 16, люблю аниме"
+    await stranger_writes(m, people, clock)
+    assert m.store.person(777).minor and m.llm.calls == []  # never classified as a date
+
+
+@pytest.mark.parametrize("text", ["я закончила универ", "смотрю канал про путешествия", "без страха",
+                                  "работаю аналитиком", "член клуба любителей кино"])
+def test_ordinary_words_are_not_graphic(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_incoming(text, None, intimacy=True) is None
+    assert classify_outgoing(text, intimacy=True) is None
+
+
+def test_graphic_words_are_caught_with_intimacy_off_too():
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing("хочу сосать", intimacy=False) == "explicit"
+    assert classify_incoming("хочу сосать", None, intimacy=False) == "explicit"
+
+
+async def test_an_unrelated_command_does_not_abort_triage(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve")
+    real_profile = people.profile
+
+    async def busy_owner(user_id):
+        await m.command("chat_mode", "auto")  # bumps the epoch, unrelated to this person
+        return await real_profile(user_id)
+    people.profile = busy_owner
+    await stranger_writes(m, people, clock)
+    assert "Вам впервые написал(а)" in inbox[-1]
+
+
+async def test_lead_during_the_existing_chat_check_wins(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve")
+    people.incoming(777, "привет")
+    await m.on_stranger(PersonRef(777, None, "Лена"))
+
+    async def owner_steps_in(user_id):
+        people.owner_writes(777, "о, привет")
+        await m.command("lead", 777)
+        return True
+    people.wrote_before = owner_steps_in
+    clock.t += 11
+    await m.tick()
+    assert m.store.person(777).state == "active"
+
+
+@pytest.mark.parametrize("text, money", [("не заплачу ни копейки", False), ("билет стоит 300 рублей", False),
+                                         ("ладно, заплачу", True), ("скину 500 на карту", True)])
+def test_refusals_and_prices_are_not_promises_to_pay(text, money):
+    from doppelgram.conversation import classify_outgoing
+    assert (classify_outgoing(text) == "money") is money
+
+
+async def test_a_queued_reply_is_dropped_when_the_person_turns_out_to_be_a_minor(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет, красотка"]}
+    await answered(m, people, clock)  # queued for 30 s
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == []
