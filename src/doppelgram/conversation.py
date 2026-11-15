@@ -132,7 +132,7 @@ def _prompt_text(text: str) -> str:
 
 # What a person never writes in a chat: code, an assistant's phrasing, a numbered list. If the agent produces it,
 # the message does not go out.
-_ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^\s*import\s+[a-z_]+\s*$|\bfunction\s*\w*\s*\(|console\.log|"
+_ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^\s*import\s+[\w.]+(?:\s+as\s+\w+)?\s*$|^\s*from\s+[\w.]+\s+import\s+[\w*]|\bfunction\s*\w*\s*\(|console\.log|"
                                r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|^\s*return\s+\w+\s*(?:[-+*/%(\[.]|$)|"
                                r"as an ai|language model|языков\w+\s+модел|как\s+ии\b|ии-ассистент|"
                                r"(?:^|\n)\s*1[.)]\s.+\n\s*2[.)]\s", re.I | re.M)
@@ -586,6 +586,23 @@ def _read(path: Path) -> str:
     return read_user_text(path)
 
 
+def _first_instant_at(day, hour: int, minute: int, tz) -> float:
+    """The first moment the wall clock in `tz` shows hour:minute on `day`; if a spring clock change skips
+    that time, the moment the clock jumps past it."""
+    wanted = (day, hour, minute)
+
+    def reached(t: float) -> bool:
+        local = datetime.fromtimestamp(t, tz)
+        return (local.date(), local.hour, local.minute) >= wanted
+
+    lo = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=1).timestamp() - 7200
+    hi = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=0).timestamp() + 7200
+    while hi - lo > 1:
+        mid = (lo + hi) / 2
+        lo, hi = (lo, mid) if reached(mid) else (mid, hi)
+    return float(math.ceil(hi))
+
+
 class ConversationManager:
     RETRY_S = 300  # a chat whose step failed (network, model, a bug) is tried again after this
     def __init__(self, cfg: ConversationConfig, llm: LLMClient, people: PeopleTransport,
@@ -1014,11 +1031,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         start_s = window.split("-")[0]
         hour, minute = int(start_s[:-3]), int(start_s[-2:])
         for back in (0, 1):
-            day = local.date() - timedelta(days=back)
-            start = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz).timestamp()
+            start = _first_instant_at(local.date() - timedelta(days=back), hour, minute, tz)
             if start <= ts:
                 return (ts - start) / 60
         return None
+
+    def _night_grace_left(self, ts: float) -> float:
+        """Seconds a lively night chat may still go on at `ts` (unlimited in the late evening)."""
+        if self._quiet_now() is None:
+            return math.inf
+        into = self._minutes_into(self.cfg.quiet_hours, ts)
+        return 0.0 if into is None else max(self.cfg.night_grace_min * 60 - into * 60, 0.0)
 
     @staticmethod
     def _lively(history: list[ChatMessage], now: float, minutes: float) -> bool:
@@ -1270,7 +1293,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if self.mode == "auto":
             delay = self._reply_delay(history)
             if self._night_end() is not None:  # a lively chat at night: answer within minutes or not at all
-                delay = min(delay, 180.0)
+                delay = max(min(delay, 180.0, self._night_grace_left(self.clock()) - 45), 1.0)
                 if not first and self._night_lively(history, self.clock()):
                     self.store.set(f"night_ok:{person.user_id}", str(now + delay))
             self.store.set_outbox(person.user_id, upto, messages, now + delay)
@@ -1294,7 +1317,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         hold = [t for t in hold if not _WHEN_WHERE_RE.search(t)]
         send_hold = bool(hold) and self.mode == "auto"
         night = self._night_end() is not None
-        if send_hold and night and not self._night_lively(history, self.clock()):
+        if send_hold and night and (not self._night_lively(history, self.clock())
+                                    or self._night_grace_left(self.clock()) < 60):
             send_hold = False  # nobody is waiting at this hour: do not promise the owner a reply that will not go out
         await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
                              written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
@@ -1302,8 +1326,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # The agent's own words, checked like any of its messages; the marker lets them out of a paused chat.
             self.store.set(f"hold:{person.user_id}", "1")
             delay = self._reply_delay(history)
-            if night:  # a lively chat at night: the holding reply goes out within minutes
-                delay = min(delay, 180.0)
+            if night:  # a lively chat at night: the holding reply goes out within minutes, before the grace ends
+                delay = max(min(delay, 180.0, self._night_grace_left(self.clock()) - 45), 1.0)
                 self.store.set(f"night_ok:{person.user_id}", str(now + delay))
             self.store.set_outbox(person.user_id, upto, hold, now + delay, keep_cards=True)
             self.wake.set()

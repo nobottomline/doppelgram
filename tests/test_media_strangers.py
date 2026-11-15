@@ -2022,3 +2022,33 @@ def test_night_grace_is_counted_in_real_minutes_across_a_clock_change(tmp_path):
     m, people, inbox, clock = make(tmp_path, timezone="Europe/Berlin")
     second_0245 = datetime(2026, 10, 25, 2, 45, tzinfo=ZoneInfo("Europe/Berlin"), fold=1).timestamp()
     assert m._minutes_into("01:30-09:00", second_0245) == 135
+
+
+@pytest.mark.parametrize("text", ["from math import sqrt\nsqrt(9)", "import numpy as np", "import os.path"])
+def test_imports_are_taken_for_code(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text) == "assistant"
+
+
+async def test_no_holding_reply_is_promised_right_before_the_night_grace_ends(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True,
+                                   timezone="Europe/Moscow", late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    await match(m)
+    clock.t = at_moscow(2, 59) + 30
+    people.chats[555] = [ChatMessage(1, True, "ахах да", clock.t - 60),
+                         ChatMessage(2, False, "давай встретимся?", clock.t - 20)]
+    m.store.record_sent(555, 1, clock.t - 60)
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["давай, гляну расписание и напишу"],
+                   "slots": "суббота", "messages": ["давай в субботу?"]}
+    await answered(m, people, clock)
+    assert m.llm.calls and not any("гляну расписание" in n for n in inbox)
+
+
+def test_a_quiet_window_starting_in_a_skipped_hour_starts_at_the_clock_change(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    m, people, inbox, clock = make(tmp_path, timezone="Europe/Berlin")
+    tz = ZoneInfo("Europe/Berlin")
+    jump = datetime(2027, 3, 28, 3, 0, tzinfo=tz).timestamp()  # 02:00 CET jumps to 03:00 CEST
+    assert m._minutes_into("02:30-09:00", jump + 300) == 5
+    assert m._minutes_into("01:30-09:00", jump + 300) == 35
