@@ -618,6 +618,8 @@ def test_smileys_are_found_and_taken_off_cleanly():
     assert _strip_smiley("ну да))") == "ну да" and _strip_smiley("ок :)") == "ок"
     assert _strip_smiley("в субботу (если получится))") == "в субботу (если получится)"
     assert _strip_smiley(")") == ""
+    assert _strip_smiley("неа, что было?),") == "неа, что было?" and _strip_smiley("ну да?) . а ты") == "ну да? а ты"
+    assert _strip_smiley("ок!), давай") == "ок! давай"
     assert _strip_smiley("да) читаю (редко)") == "да, читаю (редко)"
     assert _strip_smiley("привет :)как дела?") == "привет, как дела?"
     assert _strip_smiley("1) люблю горы\n2) люблю море") == "1) люблю горы\n2) люблю море"
@@ -701,7 +703,7 @@ def test_taking_smileys_off_never_corrupts_the_text():
     from doppelgram.conversation import _has_smiley, _strip_smiley
     rng = random.Random(7)
     words = ["да", "ну", "привет", "как", "ахах", "ок", "время"]
-    doubled = r"[,.!?]\s*,|,\s*[.!?]|\s,|,,|\(\s|\n,"
+    doubled = re.compile(r"[,.!?]\s*[,.]|,\s*[.!?]|\s,|,,|\(\s|\n,|^[,.]", re.M)
     for _ in range(5000):
         parts, depth = [], 0
         for _ in range(rng.randint(1, 6)):
@@ -713,14 +715,14 @@ def test_taking_smileys_off_never_corrupts_the_text():
                 parts.append(")")
                 depth -= 1
             elif r < 0.45:
-                parts.append(rng.choice([")", "))", ":)", ":-)", ";)", ":))", "))) "]))
-            parts += [rng.choice(words), rng.choice([" ", " ", ", ", ". ", "? ", "! ", "\n"])]
+                parts.append(rng.choice([")", "))", ":)", ":-)", ";)", ":))", "))) ", "),", ") .", ")."]))
+            parts += [rng.choice(words), rng.choice([" ", " ", ", ", ". ", "? ", "! ", "\n", "?", "!"])]
         text = ("".join(parts) + ")" * depth).strip()
         out = _strip_smiley(text)
         assert not _has_smiley(out), text
         assert out.count("(") == out.count(")") == text.count("("), text
         assert re.findall(r"[^\W\d_]+", out) == re.findall(r"[^\W\d_]+", text), text
-        assert not re.search(doubled, out) or re.search(doubled, text), text
+        assert not doubled.search(out) or doubled.search(text), text
 
 
 
