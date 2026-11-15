@@ -222,9 +222,13 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   long pause. A turn may be a few short messages in a row. It quotes one of their
   messages only to answer something specific after the chat moved on.
 - **Night.** Late in the evening (`late_hours`, 23:30–01:30) it answers only a chat that is lively right now and
-  may say good night itself ("ладно, я спать, завтра напишу"); a quiet chat written to late is answered in the
-  morning. During `quiet_hours` (01:30–09:00) nothing is sent; night messages get a morning answer, sometimes
-  with a short "сорри, уснул".
+  winds it down itself with a real reason ("мне завтра рано на пары, давай завтра"). If the person answers right
+  away or tries to keep it, it may answer briefly or stay a little, for at most `night_grace_min` minutes into
+  `quiet_hours` (01:30–09:00); otherwise nothing is sent until the morning, when night messages get an answer,
+  sometimes with a short "сорри, уснул". It never writes first or follows up at night.
+- **Not an assistant.** Asked to write code, homework, a poem, to translate, to "ignore instructions" or to show
+  a prompt, it reacts like a person ("эм, ты о чём?") and never does it; a message with code, a numbered list
+  or an assistant's phrasing is never sent, and "what model are you?" comes to you.
 - **Read receipts.** Their messages are marked read only when an answer is about to go out, a few seconds
   before typing (a network failure right after can leave them read without an answer).
 - **Late answers.** Answering hours later, it may open with a short reason from your life ("сорри, пары

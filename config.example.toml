@@ -157,6 +157,7 @@ follow_ups = true               # a quiet chat gets one light message after 20-6
 backlog_days = 30               # at start: unanswered chats people started in the last 30 days are triaged
 late_hours = "23:30-01:30"     # late evening: only a lively chat gets answers now, a quiet one in the morning
 quiet_hours = "01:30-09:00"    # asleep: nothing is sent; night messages are answered in the morning
+night_grace_min = 90           # a chat still going on may get short answers this long into quiet hours
 timezone = "Europe/Moscow"
 lowercase = true               # write like a person in a messenger
 daily_budget_usd = 1.0

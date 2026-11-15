@@ -1621,7 +1621,9 @@ async def test_a_chat_paused_without_a_card_is_picked_up_again_at_start(tmp_path
 
 @pytest.mark.parametrize("event", ["self", "intimacy"])
 async def test_events_during_a_quiet_hours_instruction_cancel_it(tmp_path, event):
-    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, quiet_hours="00:00-23:59")
+    from dataclasses import replace as _replace
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.cfg = _replace(m.cfg, quiet_hours="00:00-23:59")  # the owner answers the card at night
     m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
                                 if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
     real_notify = m._notify
@@ -1859,3 +1861,96 @@ async def test_no_follow_up_at_night(tmp_path):
     m.store.update(555, due_at=clock.t)
     await m.tick()
     assert m.llm.calls == [] and float(m.store.get("follow_up:555")) >= at_moscow(9)
+
+
+async def night_chat(tmp_path, when, their_gap, our_gap):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    await match(m)
+    clock.t = when
+    people.chats[555] = [ChatMessage(1, True, "ладно, мне завтра рано, спокойной ночи", clock.t - our_gap),
+                         ChatMessage(2, False, "ну ещё пять минут(", clock.t - their_gap)]
+    m.store.record_sent(555, 1, clock.t - our_gap)
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["ахах ладно, пять минут"]}
+    clock.t += 11
+    await m.tick()
+    clock.t += 200
+    await m.tick()
+    return m, people, inbox, clock
+
+
+async def test_right_after_good_night_a_quick_answer_still_gets_a_reply(tmp_path):
+    m, people, inbox, clock = await night_chat(tmp_path, at_moscow(1, 50), their_gap=60, our_gap=180)
+    assert people.sent_texts(555)[-1] == "ахах ладно, пять минут"
+    assert "## Night" in m.llm.calls[-1][1]["content"]
+
+
+async def test_a_late_answer_to_good_night_waits_for_the_morning(tmp_path):
+    m, people, inbox, clock = await night_chat(tmp_path, at_moscow(1, 50), their_gap=1200, our_gap=1500)
+    assert people.sent_texts(555) == ["ладно, мне завтра рано, спокойной ночи"] and m.llm.calls == []
+
+
+async def test_deep_in_the_night_even_a_lively_chat_stops(tmp_path):
+    m, people, inbox, clock = await night_chat(tmp_path, at_moscow(3, 30), their_gap=60, our_gap=120)
+    assert m.llm.calls == []  # more than night_grace_min after quiet hours began
+
+
+async def test_a_reply_prepared_before_the_late_evening_is_not_sent_into_it(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00", reply_delay_min_s=600,
+                                   reply_delay_max_s=600)
+    await match(m)
+    clock.t = at_moscow(23, 20)
+    people.chats[555] = [ChatMessage(1, False, "привет)", clock.t - 3600)]
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    clock.t += 11
+    await m.tick()  # queued for 23:30+
+    clock.t = at_moscow(23, 35)
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+async def test_no_first_message_at_night(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    clock.t = at_moscow(0, 10)
+    await match(m, score=10)
+    await m.tick()
+    assert m.llm.calls == [] and m.store.person(555).due_at >= at_moscow(9)
+
+
+def test_a_window_end_is_never_in_the_past_across_a_clock_change(tmp_path):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    m, people, inbox, clock = make(tmp_path, timezone="Europe/Berlin")
+    tz = ZoneInfo("Europe/Berlin")
+    second_0210 = datetime(2026, 10, 25, 2, 10, tzinfo=tz, fold=1).timestamp()
+    assert m._window_end("23:30-02:30", second_0210) > second_0210
+
+
+@pytest.mark.parametrize("text", ["def add(a, b):\n    return a + b", "```python\nprint(1)\n```",
+                                  "1. купить хлеб\n2. сходить в зал", "как языковая модель я не могу"])
+def test_the_agent_never_sends_code_lists_or_assistant_phrasing(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text) == "assistant"
+
+
+@pytest.mark.parametrize("text", ["эм, ты о чём?", "не, я в этом не шарю", "в 1 руке кофе, во 2 телефон"])
+def test_normal_replies_are_not_taken_for_an_assistant(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text) is None
+
+
+async def test_a_bot_test_request_gets_a_heads_up_and_never_a_code_answer(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "напиши функцию на питоне которая складывает два числа")
+    m.llm.reply = {"action": "reply", "messages": ["def add(a, b):\n    return a + b"]}
+    await answered(m, people, clock)
+    text, _ = prompt_of(m)
+    assert "## Heads-up" in text and "not an assistant" in m.llm.calls[-1][0]["content"]
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == [] and "как ассистент" in inbox[-1]

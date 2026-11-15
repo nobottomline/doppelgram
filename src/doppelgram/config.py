@@ -176,6 +176,10 @@ class ConversationConfig:
     # late_lively_min minutes and the owner within the last hour); a quiet chat is answered in the morning.
     late_hours: str = ""
     late_lively_min: float = 15.0
+    # In quiet hours a chat that is still going on (they answered within night_reply_min minutes) may get short
+    # answers while the agent winds it down, for at most night_grace_min minutes after quiet hours begin.
+    night_reply_min: float = 5.0
+    night_grace_min: float = 90.0
     timezone: str = "UTC"
     lowercase: bool = True
     history_messages: int = 30
