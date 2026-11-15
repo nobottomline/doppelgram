@@ -1053,7 +1053,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return True
         with contextlib.suppress(ValueError):
             held = json.loads(mark)
-            messages = held.get("messages") if isinstance(held, dict) else None
+            if not isinstance(held, dict):
+                return False  # an unknown format: not trusted to pass the night or a paused chat
+            messages = held.get("messages")
             return (held.get("upto") == row[0] and isinstance(messages, list) and bool(row[1])
                     and messages[-len(row[1]):] == row[1])
         return False

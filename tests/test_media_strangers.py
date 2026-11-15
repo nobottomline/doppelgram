@@ -2107,3 +2107,11 @@ async def test_a_two_message_holding_reply_goes_out_whole_in_a_paused_chat(tmp_p
         clock.t += 61
         await m.tick()
     assert people.sent_texts(555)[-2:] == ["гляну расписание", "и напишу"]
+
+
+@pytest.mark.parametrize("mark", ['["ладно"]', "not json", '{"upto": "x"}', "7"])
+def test_an_unknown_hold_marker_is_never_trusted_and_never_crashes(tmp_path, mark):
+    m, people, inbox, clock = make(tmp_path)
+    m.store.set("hold:555", mark)
+    m.store.set_outbox(555, 1, ["ладно"], clock.t)
+    assert m._hold_queued(555) is False
