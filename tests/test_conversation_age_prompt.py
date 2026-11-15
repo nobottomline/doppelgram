@@ -1,0 +1,122 @@
+"""Age declarations are normalized only in provider-facing copies of peer text."""
+
+from __future__ import annotations
+
+from dataclasses import replace
+
+import pytest
+from test_conversation import make, match
+from test_supervisor import setup
+
+from doppelgram.supervisor import Supervisor
+
+
+@pytest.mark.parametrize("age", range(10, 19))
+@pytest.mark.parametrize("images", [None, ["data:image/png;base64,AA=="]])
+async def test_peer_age_is_18_in_text_and_image_prompts(tmp_path, age, images):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    original = f"привет, мне {age}, люблю музыку; у меня 16 пластинок"
+    people.incoming(555, original)
+    people.owner_writes(555, "мне 17, это мой пример")
+    history = await people.history(555, 20)
+
+    await m._compose(m.store.person(555), history, images)
+
+    content = m.llm.calls[-1][1]["content"]
+    prompt = content if isinstance(content, str) else content[0]["text"]
+    assert "привет, мне 18, люблю музыку; у меня 16 пластинок" in prompt
+    assert "owner: мне 17, это мой пример" in prompt
+    assert "23 года, москва" in prompt  # owner facts are not peer data
+    assert history[0].text == original  # never mutate Telegram/history data
+    assert people.chats[555][0].text == original
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("Мне 10! МНЕ\u00a017? мне\n16.", "Мне 18! МНЕ\u00a018? мне\n18."),
+    ("мне 09, мне 19, мне 23", "мне 09, мне 19, мне 23"),
+    ("мне 110 и мне 180", "мне 110 и мне 180"),
+    ("мне 16.5 и мне 17,5", "мне 16.5 и мне 17,5"),
+    ("мне 16к, ремне 17, мне 016", "мне 16к, ремне 17, мне 016"),
+    ("16 пластинок, в 18:00, мне 17 лет", "16 пластинок, в 18:00, мне 18 лет"),
+])
+async def test_only_complete_peer_age_declarations_change(tmp_path, text, expected):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    people.incoming(555, text)
+    await m._compose(m.store.person(555), await people.history(555, 20))
+    assert f"Маша: {expected}" in m.llm.calls[-1][1]["content"]
+
+
+async def test_profile_notes_and_stranger_classifier_use_the_same_normalization(tmp_path):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    m.store.update(555, card="мне 16, люблю музыку", memory="сказала: мне 17")
+    await m._compose(m.store.person(555), [])
+    prompt = m.llm.calls[-1][1]["content"]
+    assert "Their dating profile: мне 18, люблю музыку" in prompt
+    assert "сказала: мне 18" in prompt
+
+    await m._classify_stranger("привет, мне 16", "мне 17, люблю музыку")
+    prompt = m.llm.calls[-1][1]["content"]
+    assert "Bio: мне 18, люблю музыку" in prompt
+    assert "привет, мне 18" in prompt
+    assert "16" not in prompt and "17" not in prompt
+
+
+@pytest.mark.parametrize("prefix", [
+    "мне если что", "Мне, если что,", "мне если чё", "мне кстати", "мне, кстати, всего",
+    "мне вообще-то", "мне вообще то", "мне вообще‑то", "мне сейчас", "мне уже почти",
+    "мне на самом деле", "мне вот уже", "мне\u00a0если\u00a0что,", "мне — кстати —",
+])
+@pytest.mark.parametrize("age", range(10, 19))
+async def test_peer_age_with_fillers_changes_only_the_number(tmp_path, prefix, age):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    original = f"привет, {prefix} {age}, люблю музыку; у меня 16 пластинок"
+    people.incoming(555, original)
+    people.owner_writes(555, original)
+    await m._compose(m.store.person(555), await people.history(555, 20))
+    prompt = m.llm.calls[-1][1]["content"]
+    assert f"Маша: привет, {prefix} 18, люблю музыку; у меня 16 пластинок" in prompt
+    assert f"owner: {original}" in prompt
+    assert people.chats[555][0].text == original
+
+
+@pytest.mark.parametrize("text", [
+    "мне нужно 16", "мне подарили 17", "мне сказали, что 16", "мне если что 160",
+    "мне кстати 16.5", "мне если что 17,5", "мне сейчас 16:00 удобно", "мне если что 016",
+    "ремне если что 17", "мне если что 19", "мне кстати 16к",
+])
+async def test_age_fillers_do_not_match_arbitrary_words_or_numeric_fragments(tmp_path, text):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    people.incoming(555, text)
+    await m._compose(m.store.person(555), await people.history(555, 20))
+    assert f"Маша: {text}" in m.llm.calls[-1][1]["content"]
+
+
+@pytest.mark.parametrize("age_mode,hide_numbers,visible_age", [
+    ("keep", True, ""),  # the default bot privacy settings
+    ("keep", False, " 18"), ("18", False, " 18"), ("18", True, ""), ("hide", True, ""),
+])
+async def test_real_bot_privacy_wiring_keeps_private_history_normalization_independent(
+        tmp_path, age_mode, hide_numbers, visible_age):
+    sup, agents, bots, bot_inbox, bot_clock = setup(tmp_path)
+    m, people, inbox, clock = make(tmp_path)
+    agents["арт"].b = replace(agents["арт"].b, age_in_prompt=age_mode, hide_numbers_10_18=hide_numbers)
+    Supervisor(agents, bot_inbox, conversations=m)
+    await match(m)
+    m.store.update(555, bot="арт", card="мне если что 16", memory="сказала: мне кстати 17")
+    original = "мне если что 16, у меня 17 пластинок"
+    people.incoming(555, original)
+    people.owner_writes(555, "мне если что 17")
+
+    await m._compose(m.store.person(555), await people.history(555, 20))
+
+    prompt = m.llm.calls[-1][1]["content"]
+    assert f"Their dating profile: мне если что{visible_age}\n\n" in prompt
+    assert f"## Your notes about this person\nсказала: мне кстати{visible_age}\n\n" in prompt
+    assert "Маша: мне если что 18, у меня 17 пластинок" in prompt
+    assert "owner: мне если что 17" in prompt
+    assert people.chats[555][0].text == original

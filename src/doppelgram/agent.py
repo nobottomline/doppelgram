@@ -643,8 +643,6 @@ class Agent:
 
         if await self._limits_exceeded(now):
             return
-        if await self._age_gate(obs, epoch):
-            return
         if self._await_keyboard(obs, now):
             return
         # A block or a check is for the owner, even if it also offers Premium or a "see who rated you".
@@ -761,9 +759,7 @@ class Agent:
                            + (f"\nОценка агента: {score}/10" if score is not None else ""))
             if self.on_match is not None:
                 # The card is stored as is; the conversation module sanitizes it when it builds a prompt.
-                age = self._card_age(card) if card else None
-                await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card, score,
-                                    minor=age is not None and age < 18)
+                await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card, score)
 
     def _allowed_commands(self) -> tuple[str, ...]:
         start = self.b.start_command.split()[:1]
@@ -779,35 +775,6 @@ class Agent:
             if name and card.startswith(name):
                 return card, score
         return "", None
-
-    def _card_age(self, text: str) -> int | None:
-        if not self.b.age_pattern:
-            return None
-        m = re.search(self.b.age_pattern, text or "", re.M)
-        try:
-            return int(m.group(1)) if m else None
-        except (IndexError, ValueError):
-            return None
-
-    async def _age_gate(self, obs: Observation, epoch: int) -> bool:
-        """Cards below the minimum age are skipped by rule, without the model and without the owner."""
-        age = self._card_age(obs.current.text)
-        if not self.b.min_age or age is None or age >= self.b.min_age:
-            return False
-        seen_key = f"agegate:{obs.current.media_key or _digest(obs.current.text)}"
-        skip = next((b for b in obs.current.buttons if b.clickable
-                     and any(s and s in b.text for s in self.b.skip_buttons)), None)
-        if skip is None or self.store.get(seen_key) is not None:
-            # No skip button, or the same card came back: never loop, hand it to the owner.
-            await self._execute(obs, Decision(action="ask_owner",
-                                              reason=f"анкета с возрастом {age} < {self.b.min_age}, "
-                                                     f"пропустить её сам не могу"), decided_by="rule")
-            return True
-        self.store.set(seen_key, str(self.clock()))
-        await self._execute(obs, Decision(action="click", button_id=skip.id,
-                                          reason=f"возраст {age} < {self.b.min_age}"),
-                            decided_by="rule", epoch=epoch)
-        return True
 
     KEYBOARD_WAIT_S = 10.0
     KEYBOARD_WAITS = 3

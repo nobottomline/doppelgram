@@ -196,7 +196,7 @@ def test_example_config_loads(tmp_path, monkeypatch):
     assert (bib.name, bib.db_path.name) == ("бибинто", "бибинто.sqlite3")
     assert leo.behavior.taste_profile == bib.behavior.taste_profile == "default"
     import re
-    assert leo.behavior.age_in_prompt == "18" and leo.behavior.min_age == 0
+    assert leo.behavior.age_in_prompt == "18"
     assert re.search(leo.behavior.age_pattern, "Аня, 17, Москва – люблю котов", re.M).group(1) == "17"
     assert re.search(leo.behavior.age_pattern, "Аня, 21, 📍3 км", re.M).group(1) == "21"
     assert re.search(bib.behavior.age_pattern, "👩‍🦰: Аня, 19 лет (✅)\n🌇Город: Москва").group(1) == "19"

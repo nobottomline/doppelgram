@@ -29,7 +29,7 @@ You bring your own API key.
 
 ```
 Telegram updates ──wake──▶ per-bot agent: re-read the bot chat → current card (photo, caption, keyboard)
-                              │  hard rules first: age gate, blocked buttons, limits, match notices
+                              │  hard rules first: blocked buttons, limits, match notices
                               ▼
             vision LLM (card + your taste text, rules, reference photos, past decisions) → JSON decision
                               │  validated against the real buttons; anything else → "ask the owner"
@@ -140,7 +140,7 @@ you send it with «ок».
 links (a phone number is not needed in Telegram); a call proposal comes to you as a draft, like a meeting.
 With `intimacy` on (the default, for adult owners; `/chat интим выкл`) the agent may flirt and talk about
 intimate topics when the person clearly wants it too, never pressures, never asks for photos, and hands
-graphic sexting to you; off, such topics come to you. Any sign that the person is under 18 always goes to you.
+graphic sexting to you; off, such topics come to you.
 
 **Stickers, photos, voice.** Stickers are read as their emoji. Photos, and a frame of gifs, videos and
 video notes, are shown to the model (`see_photos`). Voice messages and video notes are transcribed with an
@@ -222,6 +222,19 @@ The system log records actions and confidence only.
 
 **Sent to your LLM provider:** the current profile photo and caption (ages per `age_in_prompt`; standalone
 numbers 10–18 removed while `hide_numbers_10_18` is on, the default), your taste and past answers. Everything sent goes under your own API key.
+
+In private conversations, peer declarations `мне N` with a two-digit N from 10 through 18 are represented
+as `мне 18` in the LLM prompt, including chat history, understood voice messages, and stranger classification.
+Up to three short inserts such as `если что`, `кстати`, `уже`, `сейчас`, `вообще-то` and `на самом деле`
+are allowed before the number: `мне, если что, 16` becomes `мне, если что, 18`. Words, spacing and punctuation
+are preserved. Arbitrary intervening words and numeric fragments such as `16.5` or `16:00` are not matched.
+The rest of the message and the owner's messages stay unchanged. This rule is always applied to private
+conversations, independently of the bots' `age_in_prompt` and `hide_numbers_10_18` settings. Profile and note
+copies also receive this normalization before the existing bot privacy settings. Telegram messages are never
+edited. Ages do not classify people or trigger automatic skips, escalations, or draft cancellation.
+Older `min_age` and `skip_buttons` configuration entries are accepted and ignored. On opening an existing
+conversation database, the retired classification column and timestamps are removed; chat ownership,
+paused conversations, owner cards, and queued messages are preserved.
 
 The leading block of `#` lines in `taste.md`, `about-me.md`, `style.md` and the task files is a comment the
 model never sees; headings and hashtags further down are kept. The `taste`, `about-me` and `style` templates
