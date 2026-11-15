@@ -111,11 +111,7 @@ class BehaviorConfig:
     deny_buttons: list[str] = field(default_factory=list)
     # Regex that marks a "mutual like" message; links/mentions in it are recorded as a match.
     match_pattern: str = ""
-    # Hard age gate: the age is read from the card text with `age_pattern` (first group);
-    # below `min_age` one of `skip_buttons` is pressed without asking the model.
-    min_age: int = 0
-    age_pattern: str = ""
-    skip_buttons: list[str] = field(default_factory=list)
+    age_pattern: str = ""  # card age field (first group), used only to sanitize provider-facing text
     # What the LLM provider sees of ages in card texts: "keep" (as is), "18" (the age is replaced by 18),
     # "hide" (all digits are removed). Applied to every bot text sent to the model; local data is untouched.
     age_in_prompt: str = "keep"
@@ -142,7 +138,7 @@ class ConversationConfig:
     # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
     # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
     # Intimate topics (adults only): flirting, talking about sex, agreeing on an intimate meeting when the
-    # person clearly wants it. Off: such topics go to the owner. Graphic sexting and minors always do.
+    # person clearly wants it. Off: such topics go to the owner. Graphic sexting always does.
     intimacy: bool = True
     # People who write first without a match notice (e.g. Бибинто shares the username after mutual ratings):
     # "ask" — a card to the owner, who answers «веди» or «игнор»; "lead" — the agent takes up acquaintances
@@ -348,6 +344,8 @@ _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{n}" for n in range(10))
 
 def _behavior(base: Path, table: dict, parent: BehaviorConfig | None) -> BehaviorConfig:
     values = dict(table)
+    for removed in ("min_age", "skip_buttons"):  # accept older configs without enforcing the retired gate
+        values.pop(removed, None)
     if "hide_numbers_10_20" in values:  # former name
         values.setdefault("hide_numbers_10_18", values.pop("hide_numbers_10_20"))
     if "auto_min_confidence" in values:  # former name

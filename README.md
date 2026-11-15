@@ -244,8 +244,6 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
 - **Intimacy.** With `intimacy` on (default, for adult owners) it may flirt and talk about it when the person
   clearly wants it too, never pressures and never asks for photos; graphic sexting comes to you. With it off,
   intimate topics come to you.
-- **Minors.** Any sign that the person is under 18, in a profile, a bio or a message, stops all flirting, and
-  nothing written before it was known is sent.
 - **Media it cannot understand,** long voice messages, files and anything unclear.
 
 You can take over any chat at any time: write to the person yourself, or `/self 123`. The agent steps back
@@ -275,7 +273,7 @@ Local state stays on your machine or server, in `data/`.
   short visual description (no names, cities or digits), links to mutual likes, LLM spend;
 - your taste: rules and the reference photos *you* sent;
 - with conversations on, per person: name and username, their profile text or bio with all digits removed,
-  the agent's plan without digits, a taste score, a minor flag (not the age as a number), drafts and queued
+  the agent's plan without digits, a taste score, drafts and queued
   messages until they are sent, your style examples.
 
 **Never kept:** other people's photos, the captions of profiles the bots show (only matches' profiles are
@@ -287,6 +285,17 @@ answers, free text typed to a bot.
 your taste, rules, reference photos and past answers. With conversations on: your `about-me.md`,
 `conversation.md` and style examples, the agent's plan for the person, their profile, the recent chat,
 pictures from it and voice audio for transcription.
+
+In private-chat prompts, peer declarations `мне N` (10–18) become `мне 18`, including understood voice
+messages and stranger classification. Up to three short inserts such as `если что`, `кстати`, `уже`,
+`сейчас` and `вообще-то` are supported: `мне, если что, 16` becomes `мне, если что, 18`.
+Only the number changes; source Telegram messages, owner messages and unrelated numbers keep their text.
+Profile and plan copies receive the same normalization before the selected bot privacy settings, which
+may hide those digits. These settings do not change the normalization of incoming private-chat history.
+
+Age classification and automatic age-based skips, escalations and draft cancellation are removed.
+Legacy `min_age` and `skip_buttons` entries are ignored. Existing conversation databases drop the retired
+flag and timestamps while preserving chat states, owner cards, queued messages and settings.
 
 Logs record actions, statuses and confidence, not message texts.
 

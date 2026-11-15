@@ -11,7 +11,7 @@ a week.
 
 In scope: anything that lets someone other than the configured owner control the agent, leaks the session,
 keys or stored data, makes the agent pay, share contacts or personal data, write to someone it should not
-(a friend, an existing chat, a minor), or bypasses the owner's approval. Prompt injection through profiles,
+(a friend, an existing chat, a blocked person), or bypasses the owner's approval. Prompt injection through profiles,
 bios, messages, image captions or voice messages that changes what the agent does is in scope too.
 
 ## Keeping your installation safe

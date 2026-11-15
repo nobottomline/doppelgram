@@ -375,17 +375,6 @@ async def test_the_transcript_memory_is_bounded(tmp_path):
 
 
 # ------------------------------------------------------------------ review regressions
-async def test_a_minor_match_is_never_flirted_with(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Лена, 16, Москва", 10, minor=True)
-    person = m.store.person(555)
-    assert person.minor and person.score is None  # never written to first
-    people.incoming(555, "привет)")
-    await answered(m, people, clock)
-    system = m.llm.calls[-1][0]["content"]
-    text, _ = prompt_of(m)
-    assert "Intimacy is allowed" not in system and "under 18: keep it friendly" in text
-    assert "16" not in m.store.person(555).card  # the age itself is never stored
 
 
 async def test_the_owner_taking_a_stranger_during_triage_wins(tmp_path):
@@ -509,24 +498,6 @@ async def test_wrote_before_scans_the_history_for_the_accounts_own_messages():
     assert account.client.limit == PeopleChannel.WROTE_BEFORE_SCAN
 
 
-async def test_a_later_minor_match_drops_what_was_queued(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True)
-    await match(m)  # score 10: a first message gets queued
-    await m.tick()
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    clock.t += 31
-    await m.tick()
-    person = m.store.person(555)
-    assert person.minor and person.score is None and people.sent_texts(555) == []
-
-
-async def test_a_bio_saying_under_18_flags_a_stranger(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="approve", strangers="lead")
-    people.bio = "мне 16, люблю аниме"
-    await stranger_writes(m, people, clock)
-    assert m.store.person(777).minor and m.llm.calls == []  # never classified as a date
-
-
 @pytest.mark.parametrize("text", ["я закончила универ", "смотрю канал про путешествия", "без страха",
                                   "работаю аналитиком", "член клуба любителей кино"])
 def test_ordinary_words_are_not_graphic(text):
@@ -575,36 +546,6 @@ def test_refusals_and_prices_are_not_promises_to_pay(text, money):
     assert (classify_outgoing(text) == "money") is money
 
 
-async def test_a_queued_reply_is_dropped_when_the_person_turns_out_to_be_a_minor(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["привет, красотка"]}
-    await answered(m, people, clock)  # queued for 30 s
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    clock.t += 31
-    await m.tick()
-    assert people.sent_texts(555) == []
-
-
-async def test_a_late_minor_flag_cancels_the_answer_being_composed(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "привет)")
-
-    def answer(messages):
-        m.store.update(555, minor=1)  # a later match notice arrives while the model is answering
-        return {"action": "reply", "messages": ["ты такая сексуальная"]}
-    m.llm.reply = answer
-    await answered(m, people, clock)
-    m.llm.reply = {"action": "reply", "messages": ["привет) как день?"]}
-    for _ in range(3):
-        clock.t += 31
-        await m.tick()
-    assert "ты такая сексуальная" not in people.sent_texts(555)
-    assert "under 18" in prompt_of(m)[0]
-
-
 async def test_a_match_with_an_old_chat_stays_with_the_owner(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True)
     people.owner_writes(555, "привет, давно не общались")
@@ -626,25 +567,6 @@ def test_explicit_words_in_context(text, kind):
 def test_payment_promises_with_words_between(text, money):
     from doppelgram.conversation import classify_outgoing
     assert (classify_outgoing(text) == "money") is money
-
-
-async def test_a_minor_flag_during_typing_stops_the_send(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["ты такая сексуальная"]}
-    await answered(m, people, clock)  # queued
-    real_typing = people.typing
-
-    async def typing_then_flag(user_id, seconds):
-        m.store.update(555, minor=1)
-        await real_typing(user_id, seconds)
-    people.typing = typing_then_flag
-    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
-    for _ in range(3):
-        clock.t += 31
-        await m.tick()
-    assert "ты такая сексуальная" not in people.sent_texts(555)
 
 
 async def test_an_unchecked_match_chat_is_checked_before_the_first_answer(tmp_path):
@@ -703,29 +625,6 @@ async def test_a_reply_stopped_at_send_time_is_replaced_by_a_new_one(tmp_path):
     assert people.sent_texts(555) == ["как прошёл день?"]
 
 
-async def test_a_later_minor_match_cancels_a_flirt_being_typed(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
-    await answered(m, people, clock)  # queued
-    real_typing = people.typing
-
-    async def typing_then_minor(user_id, seconds):
-        people.typing = real_typing  # once
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        await real_typing(user_id, seconds)
-    people.typing = typing_then_minor
-    m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
-    clock.t += 31
-    await m.tick()
-    people.typing = real_typing
-    for _ in range(3):
-        clock.t += 31
-        await m.tick()
-    assert "хочу тебя" not in people.sent_texts(555) and people.sent_texts(555) == ["как прошёл день?"]
-
-
 async def test_lead_after_a_failed_earlier_chat_check_is_respected(tmp_path):
     from doppelgram.transport import RateLimited
     m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=5)
@@ -748,46 +647,6 @@ async def test_lead_after_a_failed_earlier_chat_check_is_respected(tmp_path):
         clock.t += 31
         await m.tick()
     assert m.store.person(555).state == "active" and "ахах да, рад слышать" in people.sent_texts(555)
-
-
-async def test_a_minor_learnt_while_another_chat_types_stops_the_queued_flirt(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-
-    async def resolve(links, ids):
-        return PersonRef(int(links[0]), None, f"p{links[0]}")
-    people.resolve = resolve
-    for uid in (1, 2):
-        await m.on_match("дайвинчик", [str(uid)], [], "", 10)
-        people.incoming(uid, "привет)")
-        m.on_message(uid)
-    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
-    clock.t += 11
-    await m.tick()  # both queued
-    real_typing = people.typing
-
-    async def typing(user_id, seconds):
-        if user_id == 1:
-            people.typing = real_typing
-            await m.on_match("дайвинчик", ["2"], [], "Аня, 16, Москва", 10, minor=True)
-        await real_typing(user_id, seconds)
-    people.typing = typing
-    m.llm.reply = {"action": "reply", "messages": ["как день?"]}
-    for _ in range(4):
-        clock.t += 31
-        await m.tick()
-    assert "хочу тебя" not in people.sent_texts(2)
-
-
-async def test_a_late_minor_flag_keeps_the_owners_escalation_card(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
-    await match(m)
-    people.incoming(555, "ты бот?")
-    await answered(m, people, clock)
-    card = 9000 + len(inbox)
-    assert m.store.person(555).state == "paused"
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    await m.answer_card(card, "нет, я живой) просто быстро печатаю")
-    assert people.sent_texts(555) == ["нет, я живой) просто быстро печатаю"]
 
 
 async def test_lead_while_the_earlier_chat_check_is_running_wins(tmp_path):
@@ -814,27 +673,6 @@ async def test_lead_while_the_earlier_chat_check_is_running_wins(tmp_path):
         clock.t += 31
         await m.tick()
     assert m.store.person(555).state == "active" and "ахах да, рад слышать" in people.sent_texts(555)
-
-
-async def test_a_network_error_after_a_late_minor_flag_does_not_restore_the_flirt(tmp_path):
-    from doppelgram.transport import TransportError
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
-    await answered(m, people, clock)  # queued
-    real_history = people.history
-
-    async def history_fails(user_id, limit):
-        people.history = real_history
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        raise TransportError("network")
-    people.history = history_fails
-    m.llm.reply = {"action": "reply", "messages": ["как день?"]}
-    for _ in range(6):
-        clock.t += 61
-        await m.tick()
-    assert "хочу тебя" not in people.sent_texts(555)
 
 
 async def test_nothing_is_sent_to_a_match_until_the_earlier_chat_check_succeeds(tmp_path):
@@ -941,23 +779,6 @@ async def owner_ok_card(tmp_path, messages):
     return m, people, inbox, clock, 9000 + len(inbox)
 
 
-async def test_an_approved_rest_is_not_sent_after_a_minor_flag(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
-    real_send = people.send
-
-    async def send_then_minor(user_id, text, reply_to=None):
-        people.send = real_send
-        msg_id = await real_send(user_id, text, reply_to=reply_to)
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        return msg_id
-    people.send = send_then_minor
-    await m.answer_card(card, "ок")
-    for _ in range(3):
-        clock.t += 31
-        await m.tick()
-    assert "хочу тебя" not in people.sent_texts(555)
-
-
 async def test_an_approved_series_survives_a_setting_change_in_the_middle(tmp_path):
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "как день прошёл?"])
     real_send = people.send
@@ -1007,31 +828,6 @@ def test_a_send_is_recorded_and_dequeued_in_one_transaction(tmp_path):
     assert store.sent_ids(1) == set() and store.outbox_is(1, 5, ["x", "y"])
 
 
-async def test_an_error_after_a_minor_flag_does_not_restore_an_approved_flirt(tmp_path):
-    from doppelgram.transport import TransportError
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
-    real_send, real_history = people.send, people.history
-    state = {"sent": 0}
-
-    async def send_once(user_id, text, reply_to=None):
-        state["sent"] += 1
-        msg_id = await real_send(user_id, text, reply_to=reply_to)
-        people.send = real_send
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-
-        async def failing(uid, limit):
-            people.history = real_history
-            raise TransportError("network")
-        people.history = failing
-        return msg_id
-    people.send = send_once
-    await m.answer_card(card, "ок")
-    for _ in range(4):
-        clock.t += 130
-        await m.tick()
-    assert "хочу тебя" not in people.sent_texts(555)
-
-
 async def test_the_owners_own_text_stays_their_text_after_a_setting_change(tmp_path):
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик агента"])
     real_typing = people.typing
@@ -1047,28 +843,6 @@ async def test_the_owners_own_text_stays_their_text_after_a_setting_change(tmp_p
         clock.t += 31
         await m.tick()
     assert "мой собственный ответ" in people.sent_texts(555)
-
-
-async def test_a_failed_approved_series_is_not_offered_again_after_a_minor_flag(tmp_path):
-    from doppelgram.transport import TransportError
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
-    real_send, real_history = people.send, people.history
-
-    async def send_once(user_id, text, reply_to=None):
-        msg_id = await real_send(user_id, text, reply_to=reply_to)
-        people.send = real_send
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-
-        async def failing(uid, limit):
-            people.history = real_history
-            raise TransportError("network")
-        people.history = failing
-        return msg_id
-    people.send = send_once
-    await m.answer_card(card, "ок")
-    assert "остальное не отправляю" in inbox[-1]
-    await m.answer_card(card, "ок")  # the old card is gone
-    assert people.sent_texts(555) == ["привет)"]
 
 
 async def test_a_restored_card_with_the_owners_text_still_sends_it_as_theirs(tmp_path):
@@ -1087,14 +861,6 @@ async def test_a_restored_card_with_the_owners_text_still_sends_it_as_theirs(tmp
     assert people.sent_texts(555) == ["мой текст"]
 
 
-async def test_a_draft_written_before_a_minor_flag_is_withdrawn(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["хочу тебя"])
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    assert "черновик агента отменён" in " ".join(inbox)
-    await m.answer_card(card, "ок")
-    assert people.sent_texts(555) == []
-
-
 async def test_a_new_message_does_not_replace_the_owners_unsent_text(tmp_path):
     from doppelgram.transport import TransportError
     m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
@@ -1111,38 +877,6 @@ async def test_a_new_message_does_not_replace_the_owners_unsent_text(tmp_path):
     await m.tick()  # must not draft over the owner's text
     await m.answer_card(card, "ок")
     assert people.sent_texts(555) == ["мой текст"]
-
-
-async def test_an_escalation_draft_written_before_a_minor_flag_is_not_sent(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "давай встретимся вечером?")
-    m.llm.reply = {"action": "reply", "messages": ["давай, хочу тебя"]}
-    await answered(m, people, clock)
-    card = 9000 + len(inbox)
-    clock.t += 5
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    await m.answer_card(card, "ок")
-    assert people.sent_texts(555) == [] and "меньше 18" in inbox[-1]
-
-
-async def test_a_draft_whose_card_appears_after_a_minor_flag_is_not_sent(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
-    real_notify = m._notify
-
-    async def notify_then_flag(text, image=None):
-        m._notify = real_notify
-        clock.t += 1
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        return await real_notify(text, image)
-    m._notify = notify_then_flag
-    await answered(m, people, clock)
-    drafts = [i for i, t in enumerate(inbox) if "Черновик" in t]
-    await m.answer_card(9000 + drafts[-1] + 1, "ок")
-    assert people.sent_texts(555) == []
 
 
 async def test_the_owners_queued_text_is_not_replaced_by_a_new_draft(tmp_path):
@@ -1165,30 +899,6 @@ async def test_the_owners_queued_text_is_not_replaced_by_a_new_draft(tmp_path):
     people.history = failing_once
     for _ in range(4):
         clock.t += 130
-        await m.tick()
-    assert "мой текст" in people.sent_texts(555)
-
-
-async def test_a_minor_without_a_known_flag_time_gets_no_old_draft_sent(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["хочу тебя"])
-    m.store.update(555, minor=1)  # e.g. flagged by an older version, no time recorded
-    await m.answer_card(card, "ок")
-    assert people.sent_texts(555) == [] and "меньше 18" in inbox[-1]
-
-
-async def test_a_minor_flag_keeps_the_owners_queued_text(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
-    real_typing = people.typing
-
-    async def typing_then_setting(user_id, seconds):
-        people.typing = real_typing
-        await m.command("chat_mode", "first:off")
-        await real_typing(user_id, seconds)
-    people.typing = typing_then_setting
-    await m.answer_card(card, "мой текст")
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    for _ in range(2):
-        clock.t += 31
         await m.tick()
     assert "мой текст" in people.sent_texts(555)
 
@@ -1225,22 +935,6 @@ async def test_lead_on_an_escalation_survives_a_network_error(tmp_path):
     assert "ещё раз" in inbox[-1]
     await m.answer_card(card, "веди")
     assert m.store.person(555).state == "active"
-
-
-async def test_the_owners_own_text_survives_a_minor_flag_during_typing(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
-    real_typing = people.typing
-
-    async def typing_then_minor(user_id, seconds):
-        people.typing = real_typing
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        await real_typing(user_id, seconds)
-    people.typing = typing_then_minor
-    await m.answer_card(card, "мой текст")
-    for _ in range(2):
-        clock.t += 31
-        await m.tick()
-    assert "мой текст" in people.sent_texts(555)
 
 
 async def test_lead_on_a_waiting_stranger_lets_the_agent_answer(tmp_path):
@@ -1282,65 +976,6 @@ async def test_a_message_sent_just_before_a_crash_is_not_sent_again(tmp_path):
     clock.t += 1
     await restarted.tick()
     assert people.sent_texts(555) == ["привет)", "как день?"]
-
-
-async def test_the_owners_queued_text_survives_a_minor_flag_and_a_network_error(tmp_path):
-    from doppelgram.transport import TransportError
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
-    real_typing, real_history = people.typing, people.history
-
-    async def typing_then_minor_and_error(user_id, seconds):
-        people.typing = real_typing
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-
-        async def failing(uid, limit):
-            people.history = real_history
-            raise TransportError("network")
-        people.history = failing
-        await real_typing(user_id, seconds)
-    people.typing = typing_then_minor_and_error
-    await m.answer_card(card, "мой текст")
-    assert "Ответьте на карточку ещё раз" in inbox[-1]  # not lost: the owner's text waits on its card
-    await m.answer_card(card, "ок")
-    assert people.sent_texts(555) == ["мой текст"]
-
-
-async def test_an_approved_agent_rest_is_not_resumed_after_a_minor_flag(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
-    real_send = people.send
-
-    async def send_then_minor(user_id, text, reply_to=None):
-        people.send = real_send
-        msg_id = await real_send(user_id, text, reply_to=reply_to)
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        m.store.unset("redecide:555")  # e.g. a /lead already re-read the chat meanwhile
-        return msg_id
-    people.send = send_then_minor
-    await m.answer_card(card, "ок")
-    for _ in range(3):
-        clock.t += 31
-        await m.tick()
-    assert "хочу тебя" not in people.sent_texts(555)
-
-
-async def test_the_owners_queued_text_survives_a_minor_flag_while_it_is_typed(tmp_path):
-    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
-    real_typing = people.typing
-    calls = {"n": 0}
-
-    async def typing(user_id, seconds):
-        calls["n"] += 1
-        if calls["n"] == 1:  # the direct answer is interrupted by a setting: it goes to the queue
-            await m.command("chat_mode", "first:off")
-        elif calls["n"] == 2:  # while the queue types it, the person turns out to be a minor
-            await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        await real_typing(user_id, seconds)
-    people.typing = typing
-    await m.answer_card(card, "мой текст")
-    for _ in range(3):
-        clock.t += 31
-        await m.tick()
-    assert "мой текст" in people.sent_texts(555)
 
 
 async def test_an_old_owner_message_with_the_same_words_is_not_taken_for_a_lost_send(tmp_path):
@@ -1813,14 +1448,6 @@ async def test_a_holding_reply_stops_when_the_mode_turns_to_approve(tmp_path):
     assert people.sent_texts(555) == []
 
 
-async def test_a_holding_reply_stops_for_a_minor(tmp_path):
-    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, hold="давай, хочу тебя увидеть, гляну")
-    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-    clock.t += 31
-    await m.tick()
-    assert people.sent_texts(555) == []
-
-
 @pytest.mark.parametrize("hold", ["давай в субботу в 18 у метро", "давай завтра", "ок, в 19:00"])
 async def test_a_holding_reply_naming_a_time_is_not_sent(tmp_path, hold):
     m, people, inbox, clock, card = await meeting_with_hold(tmp_path, hold=hold)
@@ -1913,19 +1540,6 @@ async def test_a_promised_follow_up_counts_from_when_the_answer_went_out(tmp_pat
     assert abs(float(m.store.get("follow_up:555")) - (clock() + 3600)) < 60
 
 
-async def test_a_minor_learnt_while_writing_by_instruction_stops_the_send(tmp_path):
-    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
-
-    def answer(msgs):
-        if "owner's instruction" in msgs[1]["content"]:
-            m.store.update(555, minor=1)
-            return {"action": "reply", "messages": ["в субботу в 18, жду тебя"]}
-        return {"action": "wait"}
-    m.llm.reply = answer
-    await m.answer_card(card, "суббота в 18")
-    assert "жду тебя" not in " ".join(people.sent_texts(555)) and "меньше 18" in inbox[-1]
-
-
 async def test_finishing_an_old_send_never_removes_a_newer_queued_answer(tmp_path):
     from test_conversation import ConversationStore
     store = ConversationStore(":memory:")
@@ -1954,7 +1568,7 @@ async def test_switching_to_approve_keeps_the_meeting_card(tmp_path):
     assert people.sent_texts(555) == ["в субботу в 18?"]
 
 
-@pytest.mark.parametrize("event", ["self", "minor"])
+@pytest.mark.parametrize("event", ["self", "intimacy"])
 async def test_events_while_the_owner_is_told_what_the_agent_writes_cancel_the_send(tmp_path, event):
     m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
     m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
@@ -1967,8 +1581,7 @@ async def test_events_while_the_owner_is_told_what_the_agent_writes_cancel_the_s
             if event == "self":
                 await m.command("self", 555)
             else:
-                await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10,
-                                 minor=True)
+                await m.command("chat_mode", "intimacy:off")
         return await real_notify(text, image)
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
@@ -1994,26 +1607,6 @@ async def test_self_while_the_owner_is_told_keeps_the_chat_with_the_owner(tmp_pa
     assert m.store.person(555).state == "owner" and people.sent_texts(555) == []
 
 
-async def test_a_minor_flag_while_the_meeting_card_is_sent_stops_the_hold(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "давай встретимся?")
-    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["давай, хочу тебя увидеть, гляну"],
-                   "messages": ["давай"]}
-    real_notify = m._notify
-
-    async def notify(text, image=None):
-        if text.startswith("📅"):
-            m._notify = real_notify
-            await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        return await real_notify(text, image)
-    m._notify = notify
-    await answered(m, people, clock)
-    clock.t += 31
-    await m.tick()
-    assert people.sent_texts(555) == []
-
-
 async def test_a_chat_paused_without_a_card_is_picked_up_again_at_start(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
     await match(m)
@@ -2025,7 +1618,7 @@ async def test_a_chat_paused_without_a_card_is_picked_up_again_at_start(tmp_path
     assert "бот" in inbox[-1] and m.store.open_card(555) is not None
 
 
-@pytest.mark.parametrize("event", ["self", "minor"])
+@pytest.mark.parametrize("event", ["self", "intimacy"])
 async def test_events_during_a_quiet_hours_instruction_cancel_it(tmp_path, event):
     m, people, inbox, clock, card = await meeting_with_hold(tmp_path, quiet_hours="00:00-23:59")
     m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
@@ -2038,8 +1631,7 @@ async def test_events_during_a_quiet_hours_instruction_cancel_it(tmp_path, event
             if event == "self":
                 await m.command("self", 555)
             else:
-                await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10,
-                                 minor=True)
+                await m.command("chat_mode", "intimacy:off")
         return await real_notify(text, image)
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
@@ -2055,26 +1647,13 @@ async def test_a_cancelled_answer_gives_the_card_back(tmp_path):
     async def notify(text, image=None):
         if text.startswith("Пишу"):
             m._notify = real_notify
-            await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+            await m.command("chat_mode", "intimacy:off")
         return await real_notify(text, image)
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
     assert m.store.open_card(555) is not None  # the owner can still answer, the chat is not stuck
     await m.answer_card(card, "!давай в субботу")
     assert people.sent_texts(555)[-1] == "давай в субботу"
-
-
-async def test_lead_cancelled_by_a_minor_flag_gives_the_card_back(tmp_path):
-    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
-    real_history = people.history
-
-    async def history_then_minor(uid, limit):
-        people.history = real_history
-        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
-        return await real_history(uid, limit)
-    people.history = history_then_minor
-    await m.answer_card(card, "веди")
-    assert m.store.open_card(555) is not None and "ещё раз" in inbox[-1]
 
 
 async def test_messages_surely_not_sent_after_a_failed_send_stay_on_the_card(tmp_path):

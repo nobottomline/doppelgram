@@ -101,8 +101,6 @@ max_reference_images = 6     # reference photos shown to the model per decision
 #   "keep" — as is;  "18" — the age is replaced by 18;  "hide" — all digits are removed from the text.
 age_in_prompt = "18"
 hide_numbers_10_18 = true    # also drop standalone numbers 10-18 from profile texts (possible ages); /set числа выкл
-# Optional hard age gate for bots that show minors (Leomatch and Bibinto only show adults to adults):
-# min_age = 18, skip_buttons = ["👎"] — younger profiles are skipped without the model.
 mode = "auto"                # auto (авто) | smart (умный) | supervised (ручной)
 confidence_threshold = 0.7   # умный: below this model confidence the profile goes to you
 ask_timeout_min = 0          # умный: apply the agent's own choice after N minutes without your answer (0 = wait)
