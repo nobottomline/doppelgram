@@ -1792,3 +1792,122 @@ def test_only_invitations_count_as_meetings(text, meeting):
     from doppelgram.conversation import classify_outgoing
     assert (classify_outgoing(text) == "meeting") is meeting
     assert (classify_incoming(text, None) == "meeting") is meeting
+
+
+# ------------------------------------------------------------------ review of plans, follow-ups, meetings
+async def meeting_with_hold(tmp_path, hold="давай, гляну расписание и напишу", **over):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True, **over)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": [hold], "slots": "суббота",
+                   "messages": ["давай в субботу?"]}
+    await answered(m, people, clock)
+    return m, people, inbox, clock, 9000 + len(inbox)
+
+
+async def test_a_holding_reply_stops_when_the_mode_turns_to_approve(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    await m.command("chat_mode", "approve")
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+async def test_a_holding_reply_stops_for_a_minor(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, hold="давай, хочу тебя увидеть, гляну")
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+@pytest.mark.parametrize("hold", ["давай в субботу в 18 у метро", "давай завтра", "ок, в 19:00"])
+async def test_a_holding_reply_naming_a_time_is_not_sent(tmp_path, hold):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, hold=hold)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+async def test_the_owner_taking_over_during_an_instruction_wins(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+
+    def answer(msgs):
+        if "owner's instruction" in msgs[1]["content"]:
+            m.store.update(555, state="owner")  # /self while the agent writes
+            return {"action": "reply", "messages": ["в субботу в 18?"]}
+        return {"action": "wait"}
+    m.llm.reply = answer
+    await m.answer_card(card, "суббота в 18")
+    assert "в субботу в 18?" not in people.sent_texts(555) and "забрали" in inbox[-1]
+
+
+@pytest.mark.parametrize("reply", [{"action": "escalate", "category": "money", "messages": ["куплю тебе айфон"]},
+                                   {"action": "reply", "messages": ["куплю тебе айфон, только приходи"]}])
+async def test_an_instruction_never_sends_what_the_owner_must_decide(tmp_path, reply):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.llm.reply = lambda msgs: reply if "owner's instruction" in msgs[1]["content"] else {"action": "wait"}
+    await m.answer_card(card, "суббота в 18")
+    assert "айфон" not in " ".join(people.sent_texts(555)) and "ещё раз" in inbox[-1]
+
+
+async def test_an_instruction_respects_the_daily_budget(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, daily_budget_usd=0.1)
+    m.store.log_spend(clock(), 0.5)
+    calls = len(m.llm.calls)
+    await m.answer_card(card, "суббота в 18")
+    assert len(m.llm.calls) == calls and "ещё раз" in inbox[-1]
+
+
+async def test_a_holding_reply_does_not_replace_the_owners_queued_answer(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    real_typing = people.typing
+
+    async def owner_answers_in_quiet_hours(user_id, seconds):
+        people.typing = real_typing
+        m.store.set_outbox(555, m.store.outbox_row(555)[0], ["в субботу в 18"], clock() + 9 * 3600, approved=True,
+                           owner_text=True, keep_cards=True)  # the owner's answer, waiting for the morning
+        m._bump(555)
+        await real_typing(user_id, seconds)
+    people.typing = owner_answers_in_quiet_hours
+    clock.t += 31
+    await m.tick()
+    assert m.store.outbox_row(555)[1] == ["в субботу в 18"]
+
+
+async def test_a_follow_up_held_by_quiet_hours_comes_in_the_morning(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, quiet_hours="00:00-09:00",
+                                   follow_up_min_h=1, follow_up_max_h=1)
+    clock.t = 1_800_000_000 - (1_800_000_000 % 86400) + 20 * 3600  # 20:00 UTC
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()  # sent at about 20:00
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["как вечер прошёл?"]}
+                                if "## Follow-up" in msgs[1]["content"] else {"action": "wait"})
+    clock.t = clock.t - (clock.t % 86400) + 86400 - 600  # 23:50: the follow-up is written...
+    m.store.set("follow_up:555", str(clock.t))
+    await m.tick()
+    clock.t += 1200  # ...but quiet hours started before it went out
+    await m.tick()
+    assert people.sent_texts(555) == ["привет"]
+    clock.t += 10 * 3600
+    for _ in range(4):
+        await m.tick()
+        clock.t += 130
+    assert people.sent_texts(555) == ["привет", "как вечер прошёл?"]
+
+
+async def test_a_promised_follow_up_counts_from_when_the_answer_went_out(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, reply_delay_min_s=7200,
+                                   reply_delay_max_s=7200)
+    await match(m)
+    people.incoming(555, "ахах ладно")
+    m.llm.reply = {"action": "reply", "messages": ["побежал, через час напишу"], "next_check_h": 1}
+    await answered(m, people, clock)
+    assert m.store.get("follow_up:555") is None  # not counting yet: the answer waits two hours
+    clock.t += 7201
+    await m.tick()
+    assert abs(float(m.store.get("follow_up:555")) - (clock() + 3600)) < 60
