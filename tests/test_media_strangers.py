@@ -2099,9 +2099,10 @@ async def test_messages_surely_not_sent_after_a_failed_send_stay_on_the_card(tmp
 async def test_a_send_cut_by_a_crash_is_found_even_after_many_new_messages(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=30)
     await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["привет", "как ты?"]}
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "reply", "messages": ["в субботу?"]}
     await answered(m, people, clock)
+    card = 9000 + len(inbox)
 
     class Crash(Exception):
         pass
@@ -2111,12 +2112,11 @@ async def test_a_send_cut_by_a_crash_is_found_even_after_many_new_messages(tmp_p
         m.store.commit_send = real_commit
         raise Crash()
     m.store.commit_send = crash
-    clock.t += 31
     with pytest.raises(Crash):
-        await m._tick()
+        await m.answer_card(card, "!в субботу в шесть")  # the owner's own text: it is sent even if stale
     for i in range(31):
         people.incoming(555, f"сообщение {i}")
     restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
-    clock.t += 1
+    clock.t += 61
     await restarted.tick()
-    assert people.sent_texts(555).count("привет") == 1
+    assert people.sent_texts(555).count("в субботу в шесть") == 1
