@@ -114,6 +114,12 @@ _CALL_RE = re.compile(r"(созвон|позвон|звонок|по\s+виде�
 _AGE_UNDER_18_RE = re.compile(r"(?<!\d)(1[0-7])\s*(?:лет|года?|y\.?o|yo)\b|^\s*\w+,\s*(1[0-7])\s*,", re.I | re.M)
 _MINOR_RE = re.compile(r"\b(?:мне|я)\s*(1[0-7])\b|\bв\s*(?:\d{1,2}|девят\w*|десят\w*|одиннадцат\w*)\s*класс",
                        re.I)
+_PROMPT_AGE_RE = re.compile(r"\b(мне\s+)1[0-8]\b(?![.,]\d)", re.I)
+
+
+def _prompt_text(text: str) -> str:
+    """Normalize peer age declarations in prompt copies; local safety checks use the original text."""
+    return _PROMPT_AGE_RE.sub(lambda m: m.group(1) + "18", text)
 
 ESCALATIONS = {
     "ai_question": "спрашивает, не бот ли это",
@@ -627,10 +633,7 @@ class ConversationManager:
             if score is not None and known.score is None:
                 self.store.update(ref.user_id, score=score)
             if minor and not known.minor:  # learnt later: nothing prepared before goes out, answer anew
-                self.store.update(ref.user_id, minor=1, score=None)
-                self.store.set(f"minor_at:{ref.user_id}", str(self.clock()))
-                self._bump(ref.user_id)  # a send already being typed is cancelled at its gate
-                if self.store.drop_drafts(ref.user_id):  # written without knowing: not offered any more
+                if self._mark_minor(known):
                     await self.say(f"[{bot}] {ref.name}: по анкете меньше 18, черновик агента отменён.")
                 if known.state == "active":
                     self._redecide(ref.user_id)  # cards (drafts, escalations) stay with the owner
@@ -665,6 +668,15 @@ class ConversationManager:
 
     def _bump(self, user_id: int) -> None:
         self._chat_epochs[user_id] = self._chat_epochs.get(user_id, 0) + 1
+
+    def _mark_minor(self, person: Person) -> int:
+        """Keep only the safety flag, and invalidate replies prepared before it was known."""
+        self.store.update(person.user_id, minor=1, score=None)
+        self.store.set(f"minor_at:{person.user_id}", str(self.clock()))
+        self._bump(person.user_id)
+        if not self.store.outbox_owner_text(person.user_id):
+            self.store.drop_outbox(person.user_id)
+        return self.store.drop_drafts(person.user_id)
 
     def _redecide(self, user_id: int) -> None:
         """Forget what the agent prepared for this chat and answer the person's latest messages again (the
@@ -802,6 +814,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return current is not None and current.state == "new"
 
     async def _classify_stranger(self, text: str, bio: str) -> tuple[str, str]:
+        text, bio = _prompt_text(text), _prompt_text(bio)
         failures: list = []
         try:
             result = await self.llm.complete_json(
@@ -1082,6 +1095,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         history, images = await self._understand(person, history, {m.id for m in new})
         new = [m for m in history if not m.outgoing and m.id > person.handled_upto]
+        # Prompt normalization must not erase a safety signal, even on a later turn or after resume.
+        if not person.minor and any(_MINOR_RE.search(m.text) for m in history if not m.outgoing):
+            self._mark_minor(person)
+            person = self.store.person(person.user_id)
+        # Inspect the entire burst before a meeting/call can trigger a model draft.
+        if any(_MINOR_RE.search(m.text) for m in new):
+            await self._escalate(person, history, upto, "minor", ESCALATIONS["minor"], [])
+            return
         for m in new:
             category = classify_incoming(m.text, m.media_kind, intimacy=self._intimacy_for(person))
             if category in ("meeting", "call"):
@@ -1165,6 +1186,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         for m in history[-self.cfg.history_messages:]:
             who = "owner" if m.outgoing else person.name
             body = m.text or f"({m.media_kind or 'media'})"
+            if not m.outgoing:
+                body = _prompt_text(body)
             lines.append(f"{who}: {body}")
         parts = [
             "## Goal\n"
@@ -1173,12 +1196,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         ]
         if style:
             parts.append("## How the owner writes (examples)\n" + "\n".join(f"- {s}" for s in style[-40:]))
-        card = self.sanitize(person.bot, person.card) if person.card else "(unknown)"
+        card = self.sanitize(person.bot, _prompt_text(person.card)) if person.card else "(unknown)"
         parts.append(f"## The person\nName: {person.name}\nTheir dating profile: {card}"
                      + ("\nThey are under 18: keep it friendly, no flirting, nothing intimate." if person.minor else ""))
         if person.memory:
             # Notes may have been written under an older, less private setting: sanitize them too.
-            parts.append("## Your notes about this person\n" + self.sanitize(person.bot, person.memory))
+            parts.append("## Your notes about this person\n" + self.sanitize(person.bot, _prompt_text(person.memory)))
         local = datetime.fromtimestamp(self.clock(), ZoneInfo(self.cfg.timezone))
         timing = ""
         theirs = [m for m in history if not m.outgoing and m.date]

@@ -223,6 +223,16 @@ The system log records actions and confidence only.
 **Sent to your LLM provider:** the current profile photo and caption (ages per `age_in_prompt`; standalone
 numbers 10–18 removed while `hide_numbers_10_18` is on, the default), your taste and past answers. Everything sent goes under your own API key.
 
+In private conversations, peer declarations `мне N` with a two-digit N from 10 through 18 are represented
+as `мне 18` in the LLM prompt, including chat history, understood voice messages, and stranger classification.
+The rest of the message and the owner's messages stay unchanged. This rule is always applied to private
+conversations, independently of the bots' `age_in_prompt` and `hide_numbers_10_18` settings. Profile and note
+copies also receive this normalization before the existing bot privacy settings. Telegram messages are never
+edited. Local checks still read the original text: a new declaration under 18 goes to the owner before any
+conversation-model request, and existing restrictions on intimacy remain in force.
+Only the boolean minor flag is retained, so resuming a chat or truncating its history cannot lift those
+restrictions; the declared age itself is not stored.
+
 The leading block of `#` lines in `taste.md`, `about-me.md`, `style.md` and the task files is a comment the
 model never sees; headings and hashtags further down are kept. The `taste`, `about-me` and `style` templates
 contain only that comment, so nothing is assumed about you until you write it. The task templates and
