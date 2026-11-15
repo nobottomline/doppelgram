@@ -50,10 +50,15 @@ fi
 remote() { ssh "$HOST" "if [ \"\$(id -u)\" -eq 0 ]; then bash -s; else sudo -n bash -s; fi"; }
 
 stamp=$(date +%Y%m%d-%H%M%S)
+# macOS tar adds extended attributes the server's tar warns about; leave them out.
+tar_opts=()
+if tar --version 2>/dev/null | grep -q bsdtar; then
+  tar_opts=(--no-mac-metadata --no-xattrs)
+fi
 if ((${#files[@]})); then
   echo "files: ${files[*]}"
   # One archive over one connection; unpacked into a private temp dir, then installed with the right owner.
-  tar -cf - "${files[@]}" | ssh "$HOST" "umask 077; t=\$(mktemp -d); cat > \$t/files.tar; echo \$t" > /tmp/doppelgram-push.$$
+  tar "${tar_opts[@]}" -cf - "${files[@]}" | ssh "$HOST" "umask 077; t=\$(mktemp -d); cat > \$t/files.tar; echo \$t" > /tmp/doppelgram-push.$$
   tmp=$(cat /tmp/doppelgram-push.$$)
   rm -f /tmp/doppelgram-push.$$
   remote <<EOF
