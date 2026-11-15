@@ -429,6 +429,11 @@ class ConversationStore:
         return [(r[0], r[1], json.loads(r[2]), bool(r[3])) for r in self.db.execute(
             "SELECT user_id, upto, messages, approved FROM outbox WHERE send_at <= ?", (now,))]
 
+    def outbox_is(self, user_id: int, upto: int, messages: list[str]) -> bool:
+        """Whether this exact queued message is still there (it may have been dropped or replaced)."""
+        row = self.db.execute("SELECT upto, messages FROM outbox WHERE user_id=?", (user_id,)).fetchone()
+        return row is not None and row[0] == upto and json.loads(row[1]) == messages
+
     def drop_outbox(self, user_id: int) -> None:
         self.db.execute("DELETE FROM outbox WHERE user_id=?", (user_id,))
 
@@ -558,9 +563,9 @@ class ConversationManager:
                 self.store.update(ref.user_id, score=score)
             if minor and not known.minor:  # learnt later: nothing prepared before goes out, answer anew
                 self.store.update(ref.user_id, minor=1, score=None)
-                self.store.drop_cards(ref.user_id)
                 self.epoch += 1  # a send already being typed is cancelled at its gate
-                self._redecide(ref.user_id)
+                if known.state == "active":
+                    self._redecide(ref.user_id)  # cards (drafts, escalations) stay with the owner
         if known is not None:
             return
         self.allowed.add(ref.user_id)
@@ -908,6 +913,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         if self.store.get(f"unchecked:{person.user_id}"):
             # Whether the owner already writes here could not be checked at the match: check before answering.
+            epoch = self.epoch
             try:
                 talking = await self.people.wrote_before(person.user_id)
             except RateLimited as exc:
@@ -917,6 +923,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 raise
             except TransportError:
                 self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
+                return
+            if epoch != self.epoch or not self.store.get(f"unchecked:{person.user_id}"):
+                self.wake.set()  # the owner acted meanwhile (/lead, /self...): look again with that
+                self.store.update(person.user_id, due_at=self.clock())
                 return
             self.store.unset(f"unchecked:{person.user_id}")
             if talking and not self.store.sent_ids(person.user_id):
@@ -1096,6 +1106,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 self.store.update(person.user_id, state="active", due_at=self.clock() + self.RETRY_S)
 
     async def _send_outbox(self, user_id: int, upto: int, messages: list[str], approved: bool) -> None:
+        if not self.store.outbox_is(user_id, upto, messages):
+            return  # dropped or replaced since the due list was read (e.g. while another chat was typing)
         self.store.drop_outbox(user_id)
         person = self.store.person(user_id)
         if person is None or person.state != "active" or self.stopped:

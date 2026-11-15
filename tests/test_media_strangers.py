@@ -747,3 +747,69 @@ async def test_lead_after_a_failed_earlier_chat_check_is_respected(tmp_path):
         clock.t += 31
         await m.tick()
     assert m.store.person(555).state == "active" and "ахах да, рад слышать" in people.sent_texts(555)
+
+
+async def test_a_minor_learnt_while_another_chat_types_stops_the_queued_flirt(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+
+    async def resolve(links, ids):
+        return PersonRef(int(links[0]), None, f"p{links[0]}")
+    people.resolve = resolve
+    for uid in (1, 2):
+        await m.on_match("дайвинчик", [str(uid)], [], "", 10)
+        people.incoming(uid, "привет)")
+        m.on_message(uid)
+    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
+    clock.t += 11
+    await m.tick()  # both queued
+    real_typing = people.typing
+
+    async def typing(user_id, seconds):
+        if user_id == 1:
+            people.typing = real_typing
+            await m.on_match("дайвинчик", ["2"], [], "Аня, 16, Москва", 10, minor=True)
+        await real_typing(user_id, seconds)
+    people.typing = typing
+    m.llm.reply = {"action": "reply", "messages": ["как день?"]}
+    for _ in range(4):
+        clock.t += 31
+        await m.tick()
+    assert "хочу тебя" not in people.sent_texts(2)
+
+
+async def test_a_late_minor_flag_keeps_the_owners_escalation_card(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "ты бот?")
+    await answered(m, people, clock)
+    card = 9000 + len(inbox)
+    assert m.store.person(555).state == "paused"
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+    await m.answer_card(card, "нет, я живой) просто быстро печатаю")
+    assert people.sent_texts(555) == ["нет, я живой) просто быстро печатаю"]
+
+
+async def test_lead_while_the_earlier_chat_check_is_running_wins(tmp_path):
+    from doppelgram.transport import RateLimited
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=5)
+    people.owner_writes(555, "привет, давно не общались")
+    for i in range(10):
+        people.incoming(555, f"сообщение {i}")
+    real = people.wrote_before
+    calls = {"n": 0}
+
+    async def check(user_id):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RateLimited(30)
+        if calls["n"] == 2:
+            await m.command("lead", 555)  # the owner hands the chat over while the check runs
+        return await real(user_id)
+    people.wrote_before = check
+    await match(m)
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["ахах да, рад слышать"]}
+    for _ in range(4):
+        clock.t += 31
+        await m.tick()
+    assert m.store.person(555).state == "active" and "ахах да, рад слышать" in people.sent_texts(555)
