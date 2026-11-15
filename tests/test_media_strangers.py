@@ -2067,6 +2067,7 @@ def test_a_quiet_window_starting_in_a_skipped_hour_starts_at_the_clock_change(tm
     ("Europe/Berlin", (2027, 3, 28), (2, 30), "2027-03-28T01:00"),  # skipped hour: the jump
     ("Australia/Lord_Howe", (2026, 4, 5), (1, 45), "2026-04-04T14:45"),  # half-hour autumn change
     ("Asia/Kolkata", (2027, 1, 15), (1, 30), "2027-01-14T20:00"),  # no clock changes, +05:30
+    ("Europe/Berlin", (2027, 3, 28), (2, 0), "2027-03-28T01:00:00"),  # exactly at the jump, to the second
 ])
 def test_the_first_instant_of_a_wall_time(zone, day, hhmm, expect_utc):
     from datetime import UTC, date, datetime
@@ -2074,4 +2075,17 @@ def test_the_first_instant_of_a_wall_time(zone, day, hhmm, expect_utc):
 
     from doppelgram.conversation import _first_instant_at
     ts = _first_instant_at(date(*day), *hhmm, ZoneInfo(zone))
-    assert datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M") == expect_utc
+    assert datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%S").startswith(expect_utc)
+
+
+def test_only_the_promised_holding_reply_may_miss_the_night_grace(tmp_path):
+    import json
+    m, people, inbox, clock = make(tmp_path, timezone="Europe/Moscow", late_hours="23:30-01:30",
+                                   quiet_hours="01:30-09:00")
+    clock.t = at_moscow(3, 1)
+    m.store.set("night_ok:555", str(clock.t - 60))
+    m.store.set("hold:555", json.dumps(["гляну расписание и напишу"], ensure_ascii=False))
+    m.store.set_outbox(555, 1, ["гляну расписание и напишу"], clock.t, keep_cards=True)
+    assert not m._night_blocked(555)
+    m.store.set_outbox(555, 2, ["а ты где учишься?"], clock.t)  # a regular reply replaced it
+    assert m._night_blocked(555)

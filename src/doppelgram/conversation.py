@@ -599,12 +599,12 @@ def _first_instant_at(day, hour: int, minute: int, tz) -> float:
         local = datetime.fromtimestamp(t, tz)
         return (local.date(), local.hour, local.minute) >= wanted
 
-    lo = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=1).timestamp() - 7200
-    hi = first + 7200
+    lo = int(datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=1).timestamp()) - 7200
+    hi = int(first) + 7200  # clock changes happen on whole seconds: search them exactly
     while hi - lo > 1:
-        mid = (lo + hi) / 2
+        mid = (lo + hi) // 2
         lo, hi = (lo, mid) if reached(mid) else (mid, hi)
-    return float(math.ceil(hi))
+    return float(hi)
 
 
 class ConversationManager:
@@ -1021,7 +1021,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         now = self.clock()
         mark = self.store.get(f"night_ok:{user_id}")
         fresh = bool(mark) and now - float(mark) <= 900
-        if self._quiet_now() is not None and not (fresh and self.store.get(f"hold:{user_id}")):
+        if self._quiet_now() is not None and not (fresh and self._hold_queued(user_id)):
             # A holding reply the owner was told about still goes out with its fresh marker, even if it
             # misses the end of the grace by a minute or two; anything else prepared waits for the morning.
             into = self._minutes_into(self.cfg.quiet_hours, now)
@@ -1042,6 +1042,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if start <= ts:
                 return (ts - start) / 60
         return None
+
+    def _hold_queued(self, user_id: int) -> bool:
+        """Whether the queued message is the holding reply itself (not a later reply that replaced it)."""
+        mark, row = self.store.get(f"hold:{user_id}"), self.store.outbox_row(user_id)
+        if not mark or row is None:
+            return False
+        if mark == "1":  # written by an older version, before the text was kept
+            return True
+        with contextlib.suppress(ValueError):
+            return json.loads(mark) == row[1]
+        return False
 
     def _night_grace_left(self, ts: float) -> float:
         """Seconds a lively night chat may still go on at `ts` (unlimited in the late evening)."""
@@ -1330,7 +1341,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                              written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
         if send_hold and self.store.open_card(person.user_id) is not None:
             # The agent's own words, checked like any of its messages; the marker lets them out of a paused chat.
-            self.store.set(f"hold:{person.user_id}", "1")
+            self.store.set(f"hold:{person.user_id}", json.dumps(hold, ensure_ascii=False))
             delay = self._reply_delay(history)
             if night:  # a lively chat at night: the holding reply goes out within minutes
                 delay = min(delay, 180.0)
@@ -1568,7 +1579,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not self.store.outbox_is(user_id, upto, messages):
             return  # dropped or replaced since the due list was read (e.g. while another chat was typing)
         person = self.store.person(user_id)
-        hold = bool(self.store.get(f"hold:{user_id}"))
+        hold = self._hold_queued(user_id)
         allowed = person is not None and (person.state == "active"
                                           or (person.state == "paused" and (approved or hold)))
         if not allowed or self.stopped:
@@ -1795,7 +1806,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return "interrupted", latest
         if not approved:
             # Autonomous send: only in auto mode, only in an active chat, never in quiet hours.
-            hold_ok = person.state == "paused" and bool(self.store.get(f"hold:{user_id}"))
+            hold_ok = person.state == "paused" and self._hold_queued(user_id)
             if self.mode != "auto" or not (person.state == "active" or hold_ok):
                 return "interrupted", latest
             if self._night_blocked(user_id):
