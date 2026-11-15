@@ -65,6 +65,8 @@ class PeopleTransport(Protocol):
         """The media of a message (or its preview frame); None if unavailable or too large."""
     async def profile(self, user_id: int) -> str:
         """The person's Telegram bio, empty if none."""
+    async def wrote_before(self, user_id: int) -> bool:
+        """Whether the owner's account ever sent a message in this chat (however long ago)."""
 
 
 # ------------------------------------------------------------- deterministic
@@ -88,10 +90,15 @@ _EXPLICIT_RE = re.compile(r"(секс|интим|нюдс|nudes|голая|го�
 _CONTACT_OUT_RE = re.compile(r"(https?://|t\.me/|www\.|@\w{4,}|(?:\+7|8)[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-]*\d{2}"
                              r"[\s\-]*\d{2}|vk\.com)", re.I)
 _PAY_OUT_RE = re.compile(r"(переведу|скину\s+(?:деньг|на\s+карт|\d)|номер\s+карты|реквизит|одолжу|займу\s+тебе|"
-                         r"оплачу\s+тебе)", re.I)
+                         r"оплачу|заплачу|\d+\s*(?:₽|руб|р\b|к\b|тыс))", re.I)
+# Graphic sexual words: never sent by the agent and never answered by it, even with intimacy allowed (the
+# owner takes over). Flirting and talking about intimacy in general words stay with the agent.
+_GRAPHIC_RE = re.compile(r"(член|хуй|хуё|пизд|ебат|ебл|ебу\b|трах|кончи|сосать|отсос|минет|куни|дроч|анал|вагин|"
+                         r"оргазм|сиськ|голая\s+фот|нюдс|nudes|секстинг)", re.I)
 _SPAM_RE = re.compile(r"(https?://|t\.me/|www\.|заработ|доход\w*\s+от|крипт|инвест|казино|ставк[иа]|бонус|промокод|"
                       r"подпис(?:ывайся|аться)\s+на|переходи\s+по|акци[яи]|скидк|выигр)", re.I)
 _CALL_RE = re.compile(r"(созвон|позвон|звонок|по\s+видео|видеосвяз|набер[уиё])", re.I)
+_AGE_UNDER_18_RE = re.compile(r"(?<!\d)(1[0-7])\s*(?:лет|года?|y\.?o|yo)\b|^\s*\w+,\s*(1[0-7])\s*,", re.I | re.M)
 _MINOR_RE = re.compile(r"\b(?:мне|я)\s*(1[0-7])\b|\bв\s*(?:\d{1,2}|девят\w*|десят\w*|одиннадцат\w*)\s*класс",
                        re.I)
 
@@ -114,9 +121,8 @@ def classify_incoming(text: str, media_kind: str | None, *, intimacy: bool = Fal
     the owner unless they allowed them (`intimacy`); a minor always does."""
     if media_kind:  # the conversation agent does not look at media: the owner decides
         return "media"
-    checks = [("ai_question", _AI_RE), ("ai_question", _HUMAN_RE), ("minor", _MINOR_RE)]
-    if not intimacy:
-        checks.append(("explicit", _EXPLICIT_RE))
+    checks = [("ai_question", _AI_RE), ("ai_question", _HUMAN_RE), ("minor", _MINOR_RE),
+              ("explicit", _EXPLICIT_RE if not intimacy else _GRAPHIC_RE)]
     checks += [("meeting", _MEET_RE), ("call", _CALL_RE)]
     for name, rx in checks:
         if rx.search(text or ""):
@@ -128,9 +134,8 @@ def classify_outgoing(text: str, *, intimacy: bool = False) -> str | None:
     """What the agent itself wants to write that only the owner may send: a meeting or a call, contacts, a
     promise of money, anything about being a bot (it must never deny it, so it does not discuss it at all),
     and intimate topics unless the owner allowed them."""
-    checks = [("ai_question", _AI_RE), ("money", _PAY_OUT_RE), ("contact", _CONTACT_OUT_RE)]
-    if not intimacy:
-        checks.append(("explicit", _EXPLICIT_RE))
+    checks = [("ai_question", _AI_RE), ("money", _PAY_OUT_RE), ("contact", _CONTACT_OUT_RE),
+              ("explicit", _EXPLICIT_RE if not intimacy else _GRAPHIC_RE)]
     checks += [("meeting", _MEET_RE), ("call", _CALL_RE)]
     for name, rx in checks:
         if rx.search(text or ""):
@@ -292,6 +297,7 @@ class Person:
     created: float
     owner_upto: int = 0
     score: int | None = None  # the agent's 1-10 taste score of their profile, if known
+    minor: bool = False       # their profile or bio says under 18 (no age is stored, only this)
 
 
 class ConversationStore:
@@ -316,6 +322,7 @@ class ConversationStore:
         """Add columns introduced after a database was created (CREATE IF NOT EXISTS does not)."""
         for table, column, ddl in (("people", "owner_upto", "INTEGER NOT NULL DEFAULT 0"),
                                    ("people", "score", "INTEGER"),
+                                   ("people", "minor", "INTEGER NOT NULL DEFAULT 0"),
                                    ("outbox", "approved", "INTEGER NOT NULL DEFAULT 0")):
             cols = {r[1] for r in self.db.execute(f"PRAGMA table_info({table})")}
             if column not in cols:
@@ -336,7 +343,7 @@ class ConversationStore:
         r = dict(zip(cols, row, strict=True))
         return Person(r["user_id"], r["username"], r["name"], r["bot"], r["card"], r["age"], r["state"],
                       r["memory"], r["due_at"], r["handled_upto"], bool(r["first_sent"]), r["created"],
-                      r["owner_upto"], r.get("score"))
+                      r["owner_upto"], r.get("score"), bool(r.get("minor")))
 
     def person(self, user_id: int) -> Person | None:
         return self._person(self.db.execute("SELECT * FROM people WHERE user_id=?", (user_id,)).fetchone())
@@ -500,14 +507,15 @@ class ConversationManager:
 
     # --- inputs ---------------------------------------------------------------
     async def on_match(self, bot: str, links: list[str], mention_ids: list[int], card: str,
-                       score: int | None = None) -> None:
-        """A dating bot reported a mutual like: remember the person (and maybe write first)."""
+                       score: int | None = None, minor: bool = False) -> None:
+        """A dating bot reported a mutual like: remember the person (and maybe write first). `minor`: their
+        card shows an age under 18 (only this flag is kept, never the age)."""
         try:
-            await self._on_match(bot, links, mention_ids, card, score)
+            await self._on_match(bot, links, mention_ids, card, score, minor)
         finally:
             await self._flush_breaker()
 
-    async def _on_match(self, bot, links, mention_ids, card, score=None) -> None:
+    async def _on_match(self, bot, links, mention_ids, card, score=None, minor=False) -> None:
         if not self.enabled or self.stopped:
             return
         try:
@@ -523,13 +531,19 @@ class ConversationManager:
             return
         now = self.clock()
         known = self.store.person(ref.user_id)
+        if minor:
+            score = None  # never written to first
         if known is None:
             self.store.add_person(ref, bot, card, now, score)
+            if minor:
+                self.store.update(ref.user_id, minor=1)
         else:
             if card and not known.card:
                 self.store.update(ref.user_id, card=scrub_text(card))
             if score is not None and known.score is None:
                 self.store.update(ref.user_id, score=score)
+            if minor:
+                self.store.update(ref.user_id, minor=1)
         if known is not None:
             return
         self.allowed.add(ref.user_id)
@@ -539,6 +553,9 @@ class ConversationManager:
         # Otherwise the chat waits: it is looked at when the person writes (on_message).
 
     # --- writing first ------------------------------------------------------------
+    def _intimacy_for(self, person: Person) -> bool:
+        return self.intimacy and not person.minor
+
     @property
     def intimacy(self) -> bool:
         v = self.store.get("intimacy")
@@ -606,9 +623,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
     async def _triage(self, person: Person) -> None:
         """A stranger's first messages: drop existing chats and spam, take up acquaintances (lead mode),
         ask the owner about the rest."""
-        history = await self.people.history(person.user_id, 50)
-        if any(m.outgoing for m in history) or not history:
-            self._block(person.user_id)  # an existing chat (the owner wrote there before): never ours
+        epoch = self.epoch
+        history = await self.people.history(person.user_id, self.cfg.history_messages)
+        if not history or await self.people.wrote_before(person.user_id):
+            self._block(person.user_id)  # an existing chat (the owner wrote there, ever): never ours
             return
         history, _ = await self._understand(person, history, set())
         text = "\n".join(m.text for m in history if m.text)
@@ -617,13 +635,23 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self._block(person.user_id)
             return
         bio = ""
-        with contextlib.suppress(TransportError):
+        try:
             bio = (await self.people.profile(person.user_id) or "")[:300]
+        except (AccountRestricted, RateLimited):
+            raise  # the breaker and the retry queue handle these
+        except TransportError as exc:
+            log.info("no bio for %s: %s", person.user_id, exc)
+        minor = bool(_MINOR_RE.search(text) or _AGE_UNDER_18_RE.search(bio))
         if bio:
             self.store.update(person.user_id, card=scrub_text(bio))
+        if minor:
+            self.store.update(person.user_id, minor=1)
         kind, reason = "unclear", ""
-        if self.strangers == "lead" and not self._over_budget(self.clock()):
+        if self.strangers == "lead" and not minor and not self._over_budget(self.clock()):
             kind, reason = await self._classify_stranger(text, bio)
+        current = self.store.person(person.user_id)
+        if epoch != self.epoch or current is None or current.state != "new":
+            return  # the owner decided meanwhile (/self, /lead, a card answer): theirs wins
         if kind == "spam":
             self._block(person.user_id)
             return
@@ -782,7 +810,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 continue
             understood = kind in ("sticker",) or m.id not in new_ids
             if kind in ("voice", "video_note") and m.id in new_ids:
-                understood = await self._transcribe(person, m) or (kind == "video_note" and m.id in want_picture)
+                understood = await self._transcribe(person, m)
             if m.id in want_picture and len(images) < self.MAX_IMAGES:
                 raw = await self.people.download(person.user_id, m.id, thumb=kind not in ("photo", "image"))
                 if raw:
@@ -801,7 +829,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
     async def _transcribe(self, person: Person, m: ChatMessage) -> bool:
         if m.id in self._transcripts:
             return True
-        if self.transcriber is None or not self.cfg.speech:
+        if self.transcriber is None or not self.cfg.speech or self._over_budget(self.clock()):
             return False
         if m.duration > self.cfg.speech_max_seconds:
             return False  # too long to listen to: the owner decides
@@ -861,7 +889,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         history, images = await self._understand(person, history, {m.id for m in new})
         new = [m for m in history if not m.outgoing and m.id > person.handled_upto]
         for m in new:
-            category = classify_incoming(m.text, m.media_kind, intimacy=self.intimacy)
+            category = classify_incoming(m.text, m.media_kind, intimacy=self._intimacy_for(person))
             if category in ("meeting", "call"):
                 # The goal is coming true: prepare an answer for the owner to review. The owner is told even
                 # if the draft cannot be made (budget, model failure).
@@ -893,7 +921,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self._escalate(person, history, upto, category,
                                  str(decision.get("reason") or ESCALATIONS.get(category, "")), messages)
             return
-        risky = next((c for c in (classify_outgoing(t, intimacy=self.intimacy) for t in messages) if c), None)
+        risky = next((c for c in (classify_outgoing(t, intimacy=self._intimacy_for(person)) for t in messages)
+                      if c), None)
         if risky:
             await self._escalate(person, history, upto, risky,
                                  f"агент хотел написать то, что решаете вы: {ESCALATIONS.get(risky, risky)}", messages)
@@ -925,7 +954,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if style:
             parts.append("## How the owner writes (examples)\n" + "\n".join(f"- {s}" for s in style[-40:]))
         card = self.sanitize(person.bot, person.card) if person.card else "(unknown)"
-        parts.append(f"## The person\nName: {person.name}\nTheir dating profile: {card}")
+        parts.append(f"## The person\nName: {person.name}\nTheir dating profile: {card}"
+                     + ("\nThey are under 18: keep it friendly, no flirting, nothing intimate." if person.minor else ""))
         if person.memory:
             # Notes may have been written under an older, less private setting: sanitize them too.
             parts.append("## Your notes about this person\n" + self.sanitize(person.bot, person.memory))
@@ -941,7 +971,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         failures: list = []
         try:
             result = await self.llm.complete_json(
-                [{"role": "system", "content": system_prompt(self.intimacy)},
+                [{"role": "system", "content": system_prompt(self._intimacy_for(person))},
                  {"role": "user", "content": "\n\n".join(parts) if not images else [
                      {"type": "text", "text": "\n\n".join(parts)},
                      *({"type": "image_url", "image_url": {"url": url}} for url in images)]}],

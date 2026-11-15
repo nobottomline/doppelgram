@@ -514,6 +514,11 @@ class PeopleChannel:
             data = await _call(self.client.download_media(msg, file=bytes))
         return data if isinstance(data, bytes) else None
 
+    async def wrote_before(self, user_id: int) -> bool:
+        """Whether this account ever sent anything in the chat: then it is not a stranger's first message."""
+        mine = await _call(self.client.get_messages(user_id, limit=1, from_user="me"))
+        return bool(mine)
+
     async def profile(self, user_id: int) -> str:
         full = await _call(self.client(functions.users.GetFullUserRequest(user_id)))
         return getattr(getattr(full, "full_user", None), "about", None) or ""

@@ -1674,7 +1674,7 @@ async def test_a_digit_rating_is_the_score_passed_with_a_match(tmp_path):
     agent = agents["бибинто"]
     got = []
 
-    async def on_match(*args):
+    async def on_match(*args, **kwargs):
         got.append(args)
     agent.on_match = on_match
     leo.messages.append(BotMessage(id=leo._id(), date=1, text="Аня, Москва", media_kind="photo", media_key="a",
@@ -1699,7 +1699,7 @@ async def test_the_score_survives_an_owner_confirmation(tmp_path):
     agent = agents["дайвинчик"]
     got = []
 
-    async def on_match(*args):
+    async def on_match(*args, **kwargs):
         got.append(args)
     agent.on_match = on_match
     leo.messages.append(BotMessage(id=leo._id(), date=1, text="Аня, Москва", media_kind="photo", media_key="a",

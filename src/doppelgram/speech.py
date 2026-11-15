@@ -14,7 +14,7 @@ import wave
 from dataclasses import dataclass, replace
 
 from .config import LLMConfig
-from .llm import LLMClient, LLMError
+from .llm import FailedCall, LLMClient, LLMError
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +98,9 @@ class Transcriber:
             raise SpeechError(str(exc)) from exc
         text = result.data.get("text") if isinstance(result.data, dict) else None
         if not isinstance(text, str):
+            if failures is not None:  # a paid answer without a transcript still counts against the budget
+                failures.append(FailedCall(result.model, "no transcript", result.prompt_tokens,
+                                           result.completion_tokens, result.cost_usd))
             raise SpeechError("the model returned no transcript")
         return Transcript(text.strip(), seconds, result.cost_usd)
 

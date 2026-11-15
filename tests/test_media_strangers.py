@@ -371,3 +371,118 @@ async def test_the_transcript_memory_is_bounded(tmp_path):
     people.incoming(555, "", "voice", duration=2, blob=b"ogg")
     await answered(m, people, clock)
     assert len(m._transcripts) == 500
+
+
+# ------------------------------------------------------------------ review regressions
+async def test_a_minor_match_is_never_flirted_with(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Лена, 16, Москва", 10, minor=True)
+    person = m.store.person(555)
+    assert person.minor and person.score is None  # never written to first
+    people.incoming(555, "привет)")
+    await answered(m, people, clock)
+    system = m.llm.calls[-1][0]["content"]
+    text, _ = prompt_of(m)
+    assert "Intimacy is allowed" not in system and "under 18: keep it friendly" in text
+    assert "16" not in m.store.person(555).card  # the age itself is never stored
+
+
+async def test_the_owner_taking_a_stranger_during_triage_wins(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", strangers="lead")
+    m.llm.reply = classifier("dating")
+    real_profile = people.profile
+
+    async def owner_takes_over(user_id):
+        await m.command("self", user_id)
+        return await real_profile(user_id)
+    people.profile = owner_takes_over
+    await stranger_writes(m, people, clock)
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert m.store.person(777).state == "owner" and people.sent_texts(777) == []
+
+
+async def test_a_chat_the_owner_wrote_in_long_ago_is_never_a_stranger(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", strangers="lead", history_messages=30)
+    m.llm.reply = classifier("dating")
+    people.owner_writes(777, "давно не виделись")
+    for i in range(60):
+        people.incoming(777, f"сообщение {i}")
+    await m.on_stranger(PersonRef(777, None, "Знакомый"))
+    clock.t += 11
+    await m.tick()
+    assert m.store.person(777).state == "blocked" and m.llm.calls == [] and inbox == []
+
+
+@pytest.mark.parametrize("text", ["хочу сосать", "скинь нюдс", "давай секстинг"])
+async def test_graphic_sexting_goes_to_the_owner_even_with_intimacy(tmp_path, text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text, intimacy=True) == "explicit"
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "ты такой милый)")
+    m.llm.reply = {"action": "reply", "messages": [text]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == [] and "интимная тема" in inbox[-1]
+
+
+async def test_transcription_respects_the_daily_budget(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, daily_budget_usd=0.1)
+    m.transcriber = FakeTranscriber("привет")
+    await match(m)
+    m.store.log_spend(clock(), 0.2)
+    people.incoming(555, "", "voice", duration=3, blob=b"ogg")
+    await answered(m, people, clock)
+    assert m.transcriber.calls == 0
+
+
+async def test_a_video_note_with_neither_speech_nor_picture_goes_to_the_owner(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    m.transcriber = FakeTranscriber(fail=True)
+    await match(m)
+    people.incoming(555, "", "video_note", duration=5, blob=None)  # no preview available
+    await answered(m, people, clock)
+    assert "медиа" in inbox[-1] and m.llm.calls == []
+
+
+@pytest.mark.parametrize("text", ["ок, оплачу такси", "заплачу за двоих", "скину 500"])
+def test_any_promise_to_pay_goes_to_the_owner(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text) == "money"
+
+
+@pytest.mark.parametrize("error", ["flood", "restricted"])
+async def test_telegram_limits_while_reading_a_bio_are_not_swallowed(tmp_path, error):
+    from doppelgram.transport import AccountRestricted, RateLimited
+    m, people, inbox, clock = make(tmp_path, mode="auto", strangers="lead")
+    m.llm.reply = classifier("dating")
+
+    async def failing(user_id):
+        raise RateLimited(60) if error == "flood" else AccountRestricted("PeerFloodError")
+    people.profile = failing
+    await stranger_writes(m, people, clock)
+    assert m.store.person(777).state == "new" and m.llm.calls == []
+    if error == "flood":
+        assert m.store.next_due() >= clock.t + 60
+    else:
+        assert m.stopped
+
+
+async def test_a_paid_answer_without_a_transcript_counts_against_the_budget():
+    from doppelgram.config import LLMConfig
+    from doppelgram.speech import Transcriber
+
+    class Client:
+        async def complete_json(self, messages, failures=None):
+            return LLMResult(data={"text": None}, model="m", prompt_tokens=1, completion_tokens=1, cost_usd=0.5)
+
+    t = Transcriber(LLMConfig(base_url="https://openrouter.ai/api/v1", api_key="k", model="x"), "m")
+    await t.client.aclose()
+    t.client = Client()
+    failures: list = []
+    with pytest.raises(SpeechError):
+        await t.transcribe(opus_voice(0.5), failures=failures)
+    assert [f.cost_usd for f in failures] == [0.5]

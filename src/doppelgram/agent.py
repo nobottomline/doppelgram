@@ -761,7 +761,9 @@ class Agent:
                            + (f"\nОценка агента: {score}/10" if score is not None else ""))
             if self.on_match is not None:
                 # The card is stored as is; the conversation module sanitizes it when it builds a prompt.
-                await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card, score)
+                age = self._card_age(card) if card else None
+                await self.on_match(self.name, list(msg.links), list(msg.mention_ids), card, score,
+                                    minor=age is not None and age < 18)
 
     def _allowed_commands(self) -> tuple[str, ...]:
         start = self.b.start_command.split()[:1]

@@ -54,6 +54,9 @@ class FakePeople:
     async def profile(self, user_id):
         return self.bio
 
+    async def wrote_before(self, user_id):
+        return any(m.outgoing for m in self.chats.get(user_id, []))
+
     def owner_writes(self, user_id, text):
         self.next_id += 1
         self.chats.setdefault(user_id, []).append(ChatMessage(self.next_id, True, text, 0.0))
@@ -174,7 +177,8 @@ def test_sensitive_topics_are_detected(text, category):
 
 def test_with_intimacy_allowed_only_minors_and_graphic_go_to_the_owner():
     from doppelgram.conversation import classify_outgoing
-    assert classify_incoming("пришли нюдс", None, intimacy=True) is None
+    assert classify_incoming("ты такая милая, хочу тебя", None, intimacy=True) is None
+    assert classify_incoming("пришли нюдс", None, intimacy=True) == "explicit"  # no photos, ever
     assert classify_incoming("мне 16 если что", None, intimacy=True) == "minor"
     assert classify_outgoing("хочу тебя", intimacy=True) is None
     assert classify_outgoing("интим", intimacy=False) == "explicit"
