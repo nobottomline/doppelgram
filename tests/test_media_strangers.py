@@ -813,3 +813,69 @@ async def test_lead_while_the_earlier_chat_check_is_running_wins(tmp_path):
         clock.t += 31
         await m.tick()
     assert m.store.person(555).state == "active" and "ахах да, рад слышать" in people.sent_texts(555)
+
+
+async def test_a_network_error_after_a_late_minor_flag_does_not_restore_the_flirt(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
+    await answered(m, people, clock)  # queued
+    real_history = people.history
+
+    async def history_fails(user_id, limit):
+        people.history = real_history
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        raise TransportError("network")
+    people.history = history_fails
+    m.llm.reply = {"action": "reply", "messages": ["как день?"]}
+    for _ in range(6):
+        clock.t += 61
+        await m.tick()
+    assert "хочу тебя" not in people.sent_texts(555)
+
+
+async def test_nothing_is_sent_to_a_match_until_the_earlier_chat_check_succeeds(tmp_path):
+    from doppelgram.transport import RateLimited
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=5)
+    people.owner_writes(555, "привет, давно не общались")
+    for i in range(10):
+        people.incoming(555, f"сообщение {i}")
+    real = people.wrote_before
+    started = {"n": 0}
+
+    async def slow_then_fail(user_id):
+        started["n"] += 1
+        if started["n"] == 1:  # while the match's check waits, the person writes and the agent prepares
+            people.incoming(555, "ау?")
+            m.on_message(555)
+            raise RateLimited(30)
+        return await real(user_id)
+    people.wrote_before = slow_then_fail
+    m.llm.reply = {"action": "reply", "messages": ["привет)"]}
+    await match(m)
+    for _ in range(4):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == ["привет, давно не общались"] and m.store.person(555).state == "owner"
+
+
+async def test_the_rest_of_a_series_survives_a_command_about_another_chat(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет)", "как день прошёл?"]}
+    await answered(m, people, clock)
+    real_send = people.send
+
+    async def send_then_command(user_id, text):
+        people.send = real_send
+        msg_id = await real_send(user_id, text)
+        await m.command("self", 999)  # about some other chat: bumps the shared epoch
+        return msg_id
+    people.send = send_then_command
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert people.sent_texts(555) == ["привет)", "как день прошёл?"]

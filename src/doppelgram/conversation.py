@@ -568,6 +568,8 @@ class ConversationManager:
                     self._redecide(ref.user_id)  # cards (drafts, escalations) stay with the owner
         if known is not None:
             return
+        # Until the check below succeeds, nothing is sent to this person (_process and _send_outbox look).
+        self.store.set(f"unchecked:{ref.user_id}", "1")
         self.allowed.add(ref.user_id)
         try:
             talking = await self.people.wrote_before(ref.user_id)
@@ -576,8 +578,9 @@ class ConversationManager:
             return
         except TransportError as exc:  # incl. a flood wait: checked again before the first answer
             log.warning("cannot check earlier messages with %s: %s", ref.user_id, exc)
-            self.store.set(f"unchecked:{ref.user_id}", "1")
             talking = False
+        else:
+            self.store.unset(f"unchecked:{ref.user_id}")
         if talking:  # the owner already writes to this person: the agent stays out
             self.store.update(ref.user_id, state="owner")
             await self.say(f"[{bot}] Вы уже переписываетесь с {ref.name}: агент не вмешивается. "
@@ -1112,6 +1115,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         person = self.store.person(user_id)
         if person is None or person.state != "active" or self.stopped:
             return
+        if not approved and (self.store.get(f"unchecked:{user_id}") or self.store.get(f"redecide:{user_id}")):
+            self._redecide(user_id)  # not verified yet, or to be answered anew: decide again first
+            return
         if not approved and self.mode != "auto":
             # Queued in auto mode, but the owner switched to approve meanwhile: ask first.
             history = await self.people.history(user_id, self.cfg.history_messages)
@@ -1122,13 +1128,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.set_outbox(user_id, upto, messages, quiet_end + self.rng.uniform(60, 1800), approved)
             return
         result = await self._deliver(person, upto, messages, approved=approved)
+        if self.store.get(f"redecide:{user_id}") and not approved:
+            return  # the chat is answered anew, not with what was left of these messages
         if result.status == "capped" and not result.sent:
             self.store.set_outbox(user_id, upto, messages, self.clock() + 900, approved)
-        elif result.status == "interrupted" and not result.sent:
-            if self.store.get(f"redecide:{user_id}"):
-                return  # the chat is answered anew, not with these messages
-            # The owner changed something (mode, takeover, ...): re-decide with the current settings.
-            self.store.set_outbox(user_id, upto, messages, self.clock(), approved=False)
+        elif result.status == "interrupted":
+            # The owner changed something (mode, takeover, another chat...): the rest is re-checked against
+            # the current settings when it comes up again (a takeover of this chat drops it then).
+            self.store.set_outbox(user_id, upto, messages[result.sent:], self.clock(), approved=False)
             self.wake.set()
         elif result.status == "error":
             self.store.set_outbox(user_id, upto, messages[result.sent:], self.clock() + 120, approved)
