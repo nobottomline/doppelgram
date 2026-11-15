@@ -56,6 +56,12 @@ class _Chat:
     async def wrote_before(self, user_id):
         return any(m.outgoing for m in self.messages)
 
+    async def mark_read(self, user_id, max_id):
+        return None
+
+    async def backlog(self, days):
+        return []
+
     async def download(self, user_id, msg_id, *, thumb=False):
         return None
 

@@ -157,6 +157,16 @@ you a card with their first messages and bio, and you answer «веди», «и�
 `ignore`. Switch it with `/chat незнакомые спрашивать | вести | игнор`. There is no limit on chats the
 person started; only writing first is capped.
 
+**Timing and "read".** The agent is never instantly online: it answers about as fast as the person does
+(within `reply_delay_min_s`..`reply_delay_max_s`), sometimes after a long pause, and never during quiet hours.
+Their messages are marked as read only when it answers, a few seconds before typing. Answering hours or days
+later, it may open with a short reason that fits your life ("сорри, пары были"); asked why it took long, it
+answers the same way.
+
+**Chats waiting at start.** When the agent starts (or `/chat вкл`), it looks again at the chats it leads and
+triages unanswered chats people started in the last `backlog_days` days, one after another, like any
+stranger: with `strangers = "lead"` it takes up acquaintances and asks you about the rest.
+
 **Try it offline first.** `doppelgram -c config.toml test-chat` lets the real agent (your files, prompt and
 guards) talk to a model playing a match, without Telegram. Options: `--card` (their profile), `--persona`
 (how they behave, e.g. "отвечает сухо"), `--agent-first`, `--turns`.

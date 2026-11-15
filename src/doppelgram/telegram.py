@@ -522,6 +522,31 @@ class PeopleChannel:
         msgs = await _call(self.client.get_messages(user_id, limit=self.WROTE_BEFORE_SCAN))
         return any(getattr(m, "out", False) for m in msgs or [])
 
+    async def mark_read(self, user_id: int, max_id: int) -> None:
+        await _call(self.client.send_read_acknowledge(user_id, max_id=max_id))
+
+    BACKLOG_DIALOGS = 300
+
+    async def backlog(self, days: int):
+        """Private chats with unknown people whose last message is theirs and unread (recent first)."""
+        import time as _time
+
+        from .conversation import PersonRef
+
+        since = _time.time() - days * 86400
+        out = []
+        for d in await _call(self.client.get_dialogs(limit=self.BACKLOG_DIALOGS)):
+            user, msg = d.entity, d.message
+            if not getattr(d, "is_user", False) or not is_stranger_candidate(user):
+                continue
+            if user.id in self.account.cfg.owner_ids or user.id in self.account.channels:
+                continue
+            if msg is None or msg.out or not d.unread_count or not msg.date or msg.date.timestamp() < since:
+                continue
+            name = " ".join(filter(None, [user.first_name, getattr(user, "last_name", None)])) or "без имени"
+            out.append(PersonRef(user.id, getattr(user, "username", None), name))
+        return out
+
     async def profile(self, user_id: int) -> str:
         full = await _call(self.client(functions.users.GetFullUserRequest(user_id)))
         return getattr(getattr(full, "full_user", None), "about", None) or ""

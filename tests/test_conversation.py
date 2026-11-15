@@ -30,6 +30,8 @@ class FakePeople:
         self.blobs: dict[int, bytes] = {}
         self.downloads: list = []
         self.bio = ""
+        self.read: dict[int, int] = {}
+        self.backlog_refs: list = []
 
     async def resolve(self, links, mention_ids):
         if not links:
@@ -56,6 +58,12 @@ class FakePeople:
 
     async def wrote_before(self, user_id):
         return any(m.outgoing for m in self.chats.get(user_id, []))
+
+    async def mark_read(self, user_id, max_id):
+        self.read[user_id] = max(self.read.get(user_id, 0), max_id)
+
+    async def backlog(self, days):
+        return list(self.backlog_refs)
 
     def owner_writes(self, user_id, text):
         self.next_id += 1
@@ -91,7 +99,7 @@ def make(tmp_path: Path, **over):
     (tmp_path / "about-me.md").write_text("23 года, москва. машины нет (можно сказать: скоро будет)", encoding="utf-8")
     cfg = ConversationConfig(about_file=tmp_path / "about-me.md", goal_file=tmp_path / "goal.md",
                              style_file=tmp_path / "style.md", enabled=True, settle_s=10, first_messages_per_day=3,
-                             write_first=True, reply_delay_min_s=30, reply_delay_max_s=30)
+                             write_first=True, reply_delay_min_s=30, reply_delay_max_s=30, long_delay_chance=0)
     cfg = replace(cfg, **over)
     clock = Clock()
     people = FakePeople()

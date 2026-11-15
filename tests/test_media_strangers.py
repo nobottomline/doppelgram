@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+from datetime import UTC
 
 import pytest
 from test_conversation import ChatMessage, ConversationManager, PersonRef, classify_incoming, make, match
@@ -1399,3 +1400,121 @@ async def test_a_lost_send_is_recognised_even_if_the_owner_wrote_more_after_it(t
 @pytest.mark.parametrize("text", ["когда встречаемся?", "давай встречаться", "встретимся в субботу?"])
 def test_meeting_words_in_all_forms(text):
     assert classify_incoming(text, None) == "meeting"
+
+
+# ------------------------------------------------------------------ pace, read receipts, backlog
+def test_the_reply_delay_follows_the_persons_pace_and_is_never_instant(tmp_path):
+    import random as _r
+
+    from doppelgram.conversation import _their_pace
+    m, people, inbox, clock = make(tmp_path, reply_delay_min_s=60, reply_delay_max_s=5400, long_delay_chance=0)
+    m.rng = _r.Random(1)
+    quick = [ChatMessage(1, True, "a", 1000.0), ChatMessage(2, False, "b", 1060.0),
+             ChatMessage(3, True, "c", 1100.0), ChatMessage(4, False, "d", 1190.0)]
+    slow = [ChatMessage(1, True, "a", 100.0), ChatMessage(2, False, "b", 3100.0)]
+    assert _their_pace(quick) == 90 and _their_pace(slow) == 3000
+    assert all(60 <= m._reply_delay(quick) <= 126 for _ in range(50))
+    assert all(1800 <= m._reply_delay(slow) <= 4200 for _ in range(50))
+    assert all(60 <= m._reply_delay([]) <= 5400 for _ in range(50))
+
+
+def test_sometimes_the_agent_takes_a_long_pause(tmp_path):
+    import random as _r
+    m, people, inbox, clock = make(tmp_path, long_delay_chance=1.0, long_delay_min_s=1800, long_delay_max_s=9000)
+    m.rng = _r.Random(2)
+    assert all(1800 <= m._reply_delay([]) <= 9000 for _ in range(20))
+
+
+async def test_messages_are_read_only_when_the_agent_answers(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    msg_id = people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет, как ты?"]}
+    await answered(m, people, clock)
+    assert people.read == {}  # queued for later: not read yet, like a busy person
+    clock.t += 31
+    await m.tick()
+    assert people.read == {555: msg_id} and people.sent_texts(555) == ["привет, как ты?"]
+
+
+async def test_read_receipts_can_be_switched_off(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, read_receipts=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.read == {} and people.sent_texts(555) == ["привет"]
+
+
+async def test_the_prompt_says_how_long_ago_they_wrote(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.chats[555] = [ChatMessage(10, False, "привет, ты тут?", clock() - 3 * 3600)]
+    await answered(m, people, clock)
+    text, _ = prompt_of(m)
+    system = m.llm.calls[-1][0]["content"]
+    assert "Their last message was 3 h ago" in text and "busy person" in system
+
+
+async def test_unanswered_chats_are_picked_up_at_start(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", strangers="lead")
+    m.llm.reply = classifier("dating")
+    people.incoming(901, "привет) мы в дайвинчике совпали")
+    people.incoming(902, "привет, это Саша с курса")
+    people.backlog_refs = [PersonRef(901, "a_example", "Аня"), PersonRef(902, None, "Саша")]
+    await m.startup()
+    assert m.store.person(901).state == "new" and m.store.person(902).state == "new"
+    assert m.store.person(902).due_at > m.store.person(901).due_at  # one after another
+    m.llm.reply = lambda msgs: ({"kind": "dating" if "дайвинчик" in msgs[1]["content"] else "known", "reason": "т"}
+                                if "unknown Telegram user" in msgs[0]["content"]
+                                else {"action": "reply", "messages": ["привет) сорри, пропал"]})
+    for _ in range(4):
+        clock.t += 200
+        await m.tick()
+    assert m.store.person(901).state == "active" and m.store.person(902).state == "new"
+    assert any("Вам впервые написал(а) Саша" in t for t in inbox)
+
+
+async def test_switching_chats_on_picks_up_waiting_chats(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", enabled=False)
+    people.incoming(901, "привет)")
+    people.backlog_refs = [PersonRef(901, None, "Аня")]
+    await m.startup()
+    assert m.store.person(901) is None  # chats are off
+    await m.command("chat_mode", "on")
+    assert m.store.person(901).state == "new"
+
+
+async def test_chats_the_agent_leads_are_looked_at_again_at_start(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "ты где пропал?")  # written while the agent was down: no event
+    await m.startup()
+    clock.t += 1
+    await m.tick()
+    assert "Черновик" in inbox[-1]
+
+
+async def test_backlog_keeps_only_unread_chats_people_started_recently():
+    import time
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from telethon.tl import types
+
+    from doppelgram.telegram import PeopleChannel
+
+    def dialog(uid, *, out=False, unread=1, days_ago=1, **flags):
+        msg = SimpleNamespace(out=out, date=datetime.fromtimestamp(time.time() - days_ago * 86400, UTC))
+        return SimpleNamespace(is_user=True, entity=types.User(id=uid, first_name=f"u{uid}", **flags), message=msg,
+                               unread_count=unread)
+
+    class Client:
+        async def get_dialogs(self, limit):
+            return [dialog(1), dialog(2, out=True), dialog(3, unread=0), dialog(4, days_ago=40),
+                    dialog(5, contact=True), dialog(6, bot=True), dialog(42), dialog(7)]
+    account = SimpleNamespace(client=Client(), cfg=SimpleNamespace(owner_ids=[42]), channels={7: object()})
+    refs = await PeopleChannel(account).backlog(30)
+    assert [r.user_id for r in refs] == [1]

@@ -160,8 +160,16 @@ class ConversationConfig:
     first_messages_per_day: int = 3
     max_sends_per_hour: int = 20
     settle_s: float = 25.0  # wait for a burst of incoming messages before answering
-    reply_delay_min_s: float = 45.0
-    reply_delay_max_s: float = 240.0
+    # A busy person's pace, never instant: the delay follows how fast the person answers (mirror_pace),
+    # within reply_delay_min_s..reply_delay_max_s, and now and then a long pause (long_delay_chance).
+    reply_delay_min_s: float = 60.0
+    reply_delay_max_s: float = 5400.0
+    mirror_pace: bool = True
+    long_delay_chance: float = 0.15
+    long_delay_min_s: float = 1800.0
+    long_delay_max_s: float = 9000.0
+    read_receipts: bool = True  # their messages are marked as read when the agent answers (not before)
+    backlog_days: int = 30  # at start: unanswered chats people started in the last N days are triaged (0: off)
     quiet_hours: str = ""  # "01:00-09:00" in `timezone`: no messages are sent then
     timezone: str = "UTC"
     lowercase: bool = True
@@ -316,6 +324,8 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
         raise ConfigError("conversations.write_first_min_score must be 1-10")
     if cfg.write_first and cfg.first_messages_per_day < 1:
         raise ConfigError("conversations.write_first needs first_messages_per_day of at least 1")
+    if not 0 <= cfg.long_delay_chance <= 1 or cfg.long_delay_max_s < cfg.long_delay_min_s:
+        raise ConfigError("long_delay_chance must be 0-1 and long_delay_max_s >= long_delay_min_s")
     if cfg.reply_delay_max_s < cfg.reply_delay_min_s:
         raise ConfigError("reply_delay_max_s must be >= reply_delay_min_s")
     try:

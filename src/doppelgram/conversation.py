@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import json
 import logging
+import math
 import random
 import re
 import sqlite3
@@ -67,6 +69,11 @@ class PeopleTransport(Protocol):
         """The person's Telegram bio, empty if none."""
     async def wrote_before(self, user_id: int) -> bool:
         """Whether the owner's account ever sent a message in this chat (however long ago)."""
+    async def mark_read(self, user_id: int, max_id: int) -> None:
+        """Mark the person's messages up to max_id as read."""
+    async def backlog(self, days: int) -> list[PersonRef]:
+        """Private chats with people (not contacts, bots, services) whose last message is theirs and unread,
+        from the last `days` days."""
 
 
 # ------------------------------------------------------------- deterministic
@@ -168,6 +175,26 @@ def parse_reply(data) -> tuple[str, list[str], dict]:
     return action, [t for t in raw or [] if t.strip()], data
 
 
+def _their_pace(history: list[ChatMessage]) -> float | None:
+    """The median time the person took to answer the owner's messages (last three exchanges), in seconds."""
+    gaps = []
+    for prev, cur in itertools.pairwise(history):
+        if prev.outgoing and not cur.outgoing and prev.date and cur.date and cur.date >= prev.date:
+            gaps.append(cur.date - prev.date)
+    if not gaps:
+        return None
+    recent = sorted(gaps[-3:])
+    return recent[len(recent) // 2]
+
+
+def _ago(seconds: float) -> str:
+    if seconds < 3600:
+        return f"{seconds / 60:.0f} min"
+    if seconds < 172800:
+        return f"{seconds / 3600:.0f} h"
+    return f"{seconds / 86400:.0f} days"
+
+
 def _engagement(history: list[ChatMessage]) -> str:
     """A plain summary of how engaged the person is, so the model notices dry replies."""
     theirs = [m for m in history if not m.outgoing]
@@ -218,6 +245,7 @@ How to talk:
 - Pick up threads: details from their profile, things they told you (see your notes), open questions. Do not repeat questions or facts already discussed.
 - Light humour and playful teasing are fine when the tone allows. No pressure, no neediness, no long monologues.
 - Do not stay on one small topic for more than two turns. If their recent replies are short and they ask nothing back (see "## Now"), do not ask another question on the same topic: share something of the owner's or switch to a new, lighter topic. If they stay dry after that, choose "wait" instead of chasing. Never send several messages in a row without an answer from them.
+- Timing: the owner is a busy person, not always online. If you answer long after their message (several hours or days), you may open with a short natural reason that fits the owner's life ("сорри, пары были", "только с тренировки"), not every time and never a long story. If they ask why you took long, answer the same way, from the owner's facts and schedule. If they took long themselves, do not complain about it.
 - First message (empty chat): one or two short messages that open with something specific from their profile and an easy question. Never just "привет, как дела", never a compliment on looks.
 
 Moving toward the goal:
@@ -700,14 +728,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         """Anyone the agent already has a record of (matches, strangers decided or waiting)."""
         return user_id in self.allowed or self.store.person(user_id) is not None
 
-    async def on_stranger(self, ref: PersonRef) -> None:
+    async def on_stranger(self, ref: PersonRef, delay: float | None = None) -> None:
         """Someone wrote first without a match notice. The transport has already left out contacts, bots,
         service and scam accounts; whether there was an earlier chat is checked when the chat is looked at."""
         if not self.enabled or self.stopped or self.strangers == "ignore" or self.knows(ref.user_id):
             return
         now = self.clock()
         if self.store.add_person(ref, "telegram", "", now):
-            self.store.update(ref.user_id, state="new", due_at=now + self.cfg.settle_s)
+            self.store.update(ref.user_id, state="new", due_at=now + (self.cfg.settle_s if delay is None else delay))
             self.wake.set()
 
     @property
@@ -802,7 +830,37 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.wake.set()
 
     # --- loop -----------------------------------------------------------------
+    async def startup(self) -> None:
+        """At start (and when chats are switched on): look again at the chats the agent leads (people may
+        have written meanwhile), and triage unanswered chats people started recently."""
+        try:
+            await self._startup()
+        except AccountRestricted as exc:
+            self._trip(str(exc))
+        except TransportError as exc:
+            log.warning("cannot scan chats at start: %s", exc)
+        finally:
+            await self._flush_breaker()
+
+    async def _startup(self) -> None:
+        if not self.enabled or self.stopped:
+            return
+        now = self.clock()
+        led = [p for p in self.store.people() if p.state == "active" and p.due_at is None]
+        for i, p in enumerate(led):
+            self.store.update(p.user_id, due_at=now + 30 * i)  # one after another, not all at once
+        if self.strangers == "ignore" or self.cfg.backlog_days <= 0:
+            self.wake.set()
+            return
+        refs = [r for r in await self.people.backlog(self.cfg.backlog_days) if not self.knows(r.user_id)]
+        for i, ref in enumerate(refs):
+            await self.on_stranger(ref, delay=60 + 120 * i)
+        if refs:
+            log.info("%d unanswered chats found at start", len(refs))
+        self.wake.set()
+
     async def run_forever(self) -> None:
+        await self.startup()
         while True:
             nxt = self.store.next_due()
             timeout = 300.0 if nxt is None else max(1.0, min(300.0, nxt - self.clock()))
@@ -1073,12 +1131,25 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                  written_at=now)
             return
         if self.mode == "auto":
-            delay = self.rng.uniform(self.cfg.reply_delay_min_s, self.cfg.reply_delay_max_s)
+            delay = self._reply_delay(history)
             self.store.set_outbox(person.user_id, upto, messages, now + delay)
             self.store.update(person.user_id, handled_upto=upto)
             self.wake.set()
         else:
             await self._draft(person, history, upto, messages, written_at=now)
+
+    def _reply_delay(self, history: list[ChatMessage]) -> float:
+        """How long a busy person would take to answer: about as fast as the person answers (or a few
+        minutes when unknown), sometimes much later; never instant."""
+        lo, hi = self.cfg.reply_delay_min_s, self.cfg.reply_delay_max_s
+        if self.rng.random() < self.cfg.long_delay_chance:
+            return self.rng.uniform(self.cfg.long_delay_min_s, self.cfg.long_delay_max_s)
+        pace = _their_pace(history) if self.cfg.mirror_pace else None
+        if pace is None:
+            target = self.rng.lognormvariate(math.log(max(lo, 1.0) * 4), 0.6)
+        else:
+            target = pace * self.rng.uniform(0.6, 1.4)
+        return min(max(target, lo), hi)
 
     def _over_budget(self, now: float) -> bool:
         return self.cfg.daily_budget_usd > 0 and self.store.spend_today(now) >= self.cfg.daily_budget_usd
@@ -1105,7 +1176,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # Notes may have been written under an older, less private setting: sanitize them too.
             parts.append("## Your notes about this person\n" + self.sanitize(person.bot, person.memory))
         local = datetime.fromtimestamp(self.clock(), ZoneInfo(self.cfg.timezone))
-        parts.append(f"## Now\n{local:%A %H:%M} ({self.cfg.timezone}). {_engagement(history)}")
+        timing = ""
+        theirs = [m for m in history if not m.outgoing and m.date]
+        ours = [m for m in history if m.outgoing and m.date]
+        if theirs:
+            timing += f" Their last message was {_ago(self.clock() - theirs[-1].date)} ago."
+        if ours:
+            timing += f" The owner's last message was {_ago(self.clock() - ours[-1].date)} ago."
+        parts.append(f"## Now\n{local:%A %H:%M} ({self.cfg.timezone}). {_engagement(history)}{timing}")
         parts.append("## Chat so far (oldest first)\n" + ("\n".join(lines) if lines else
                      "(empty: write the first message, based on their profile; no links, no contacts)"))
         if images:
@@ -1241,6 +1319,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         epoch = self._epoch_of(person.user_id) if epoch is None else epoch
         sent = 0
         for i, text in enumerate(messages):
+            if i == 0 and self.cfg.read_receipts and upto:
+                await self._mark_read(person.user_id, upto)
             try:
                 await self.people.typing(person.user_id, min(12.0, 1.5 + len(text) / 12))
                 history = await self.people.history(person.user_id, self.cfg.history_messages)
@@ -1287,6 +1367,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         return Delivery("sent", sent)
+
+    async def _mark_read(self, user_id: int, max_id: int) -> None:
+        """Read their messages, then a short pause before typing, like a person opening the chat."""
+        try:
+            await self.people.mark_read(user_id, max_id)
+        except AccountRestricted:
+            raise
+        except TransportError as exc:  # not worth failing a reply for
+            log.info("cannot mark chat %s as read: %s", user_id, exc)
+            return
+        await self.sleep(self.rng.uniform(2, 8))
 
     def _already_sent(self, user_id: int, history: list[ChatMessage], text: str) -> ChatMessage | None:
         """This very send went out before a crash but was never recorded: its marker is still there, and the
@@ -1571,6 +1662,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if arg in ("on", "off"):
                 self.store.set("enabled", "1" if arg == "on" else "0")
                 await self.say(f"Переписка {'включена' if arg == 'on' else 'выключена'}.")
+                if arg == "on":
+                    await self._startup()  # pick up chats that waited while it was off
             else:
                 self.store.set("mode", arg)
                 await self.say(f"Режим переписки: {'авто' if arg == 'auto' else 'подтверждение'}.")
