@@ -489,3 +489,30 @@ async def test_a_hold_sharing_a_line_with_the_draft_does_not_count_its_facts(tmp
 
 def test_name_parts_match_inside_an_underscored_word():
     assert clean_queries(["ann_lee университет"], ["ann", "lee"]) == []
+
+
+def test_fact_progress_is_idempotent_and_completes_with_the_last_message(tmp_path):
+    m, people, inbox, clock = make(tmp_path)
+    m._pend_facts(555, {"new_facts": ["есть машина"]}, ["а", "б"])
+    assert m._facts_sent(555, "а") == [] and m._facts_sent(555, "а") == []  # a recovered send repeats it
+    assert m._facts_sent(555, "в") == []  # not one of them
+    assert m._facts_sent(555, "б") == ["есть машина"] and m._said(555) == ["есть машина"]
+
+
+async def test_a_crash_right_after_a_send_keeps_its_fact_progress(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "а ты на чём ездишь?")
+    m.llm.reply = {"action": "reply", "messages": ["у меня", "своя машина"], "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    real = m.store.commit_send
+
+    def crash(*args, **kwargs):
+        raise RuntimeError("killed")
+    m.store.commit_send = crash
+    clock.t += 31
+    with pytest.raises(RuntimeError):
+        await m.tick()
+    m.store.commit_send = real
+    assert people.sent_texts(555) == ["у меня"]
+    assert json.loads(m.store.get("facts:555"))["sent"] == ["у меня"]

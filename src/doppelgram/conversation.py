@@ -1654,7 +1654,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
 
     def _pend_facts(self, user_id: int, decision: dict, messages: list[str]) -> None:
         """What these messages say about the owner beyond about-me. It counts as said only once all of them have
-        actually gone out (see _commit_facts): a skipped draft, a dropped reply or a holding reply that happens to
+        actually gone out (see _facts_sent): a skipped draft, a dropped reply or a holding reply that happens to
         share a line with the draft leaves nothing behind."""
         raw = decision.get("new_facts")
         facts = [scrub_text(" ".join(f.split()), 200) for f in raw if isinstance(f, str) and f.strip()][:3] \
@@ -1665,28 +1665,33 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         else:
             self.store.unset(f"facts:{user_id}")
 
-    async def _commit_facts(self, person: Person, text: str) -> None:
-        """A message went out: if it carried facts about the owner, they are kept for consistency and the
-        owner is told."""
+    def _facts_sent(self, user_id: int, text: str) -> list[str]:
+        """A message went out (synchronous, idempotent: called right after the send, before it is recorded, so
+        a crash in between is repaired by the lost-send recovery calling it again). Once all messages of the
+        pending decision are out, its facts are kept for consistency; returns the ones the owner should hear of."""
         try:
-            pending = json.loads(self.store.get(f"facts:{person.user_id}") or "{}")
+            pending = json.loads(self.store.get(f"facts:{user_id}") or "{}")
         except ValueError:
             pending = {}
         texts = pending.get("texts") if isinstance(pending, dict) else None
         if not isinstance(texts, list) or text not in texts:
-            return
+            return []
         sent = [t for t in pending.get("sent") or [] if isinstance(t, str)]
         if text not in sent:
             sent.append(text)
         if not set(texts) <= set(sent):  # the rest of these messages has not gone out yet
-            self.store.set(f"facts:{person.user_id}", json.dumps({**pending, "sent": sent}, ensure_ascii=False))
-            return
-        self.store.unset(f"facts:{person.user_id}")
-        said = self._said(person.user_id)
+            self.store.set(f"facts:{user_id}", json.dumps({**pending, "sent": sent}, ensure_ascii=False))
+            return []
+        self.store.unset(f"facts:{user_id}")
+        said = self._said(user_id)
         added = [f for f in pending.get("facts") or [] if isinstance(f, str) and f not in said]
+        if added:
+            self.store.set(f"said:{user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
+        return added
+
+    async def _report_facts(self, person: Person, added: list[str]) -> None:
         if not added:
             return
-        self.store.set(f"said:{person.user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
         await self.say(f"ℹ️ {person.name}: агент сказал о вас то, чего нет в about-me: "
                        + "; ".join(f"«{f}»" for f in added)
                        + ". Если это неправда, допишите about-me.md или заберите диалог: /self "
@@ -1864,9 +1869,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 sent += 1
                 if i == 0:
                     self.store.unset(f"reply_to:{person.user_id}")
+                added = [] if owner_text else self._facts_sent(person.user_id, text)
                 self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:], messages[i:])
-                if not owner_text:
-                    await self._commit_facts(person, text)
+                await self._report_facts(person, added)
                 continue
             # ---- synchronous gate: nothing below may await before people.send() ----
             status, latest = self._gate(person.user_id, upto, history, epoch, approved=approved,
@@ -1895,14 +1900,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 self.store.unset(f"sending:{person.user_id}")
                 return Delivery("send_failed", sent)
             # ---- progress first: whatever happens next, this message is never sent again ----
+            added = [] if owner_text else self._facts_sent(person.user_id, text)
             sent += 1
             if i == 0:
                 self.store.unset(f"reply_to:{person.user_id}")
             # The queue holds only what is still unsent: a restart resumes, never repeats.
             self.store.commit_send(person.user_id, msg_id, self.clock(), latest if owner_text else upto,
                                    messages[i + 1:] if from_outbox else None, messages[i:] if from_outbox else None)
-            if not owner_text:
-                await self._commit_facts(person, text)
+            await self._report_facts(person, added)
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         after = self.store.get(f"follow_up_after:{person.user_id}")
