@@ -495,7 +495,7 @@ async def test_old_database_is_migrated(tmp_path):
     db.close()
     store = ConversationStore(path)
     assert store.person(1).owner_upto == 0
-    assert store.due_outbox(1.0) == [(1, 0, ["привет"], False)]
+    assert store.due_outbox(1.0) == [(1, 0, ["привет"], False, False)]
 
 
 async def test_capped_batch_remainder_is_not_marked_approved(tmp_path):

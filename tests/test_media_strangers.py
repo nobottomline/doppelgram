@@ -1004,3 +1004,45 @@ def test_a_send_is_recorded_and_dequeued_in_one_transaction(tmp_path):
     with pytest.raises(RuntimeError):
         store.commit_send(1, 77, 1.0, 5, ["y"])
     assert store.sent_ids(1) == set() and store.outbox_is(1, 5, ["x", "y"])
+
+
+async def test_an_error_after_a_minor_flag_does_not_restore_an_approved_flirt(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
+    real_send, real_history = people.send, people.history
+    state = {"sent": 0}
+
+    async def send_once(user_id, text):
+        state["sent"] += 1
+        msg_id = await real_send(user_id, text)
+        people.send = real_send
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+
+        async def failing(uid, limit):
+            people.history = real_history
+            raise TransportError("network")
+        people.history = failing
+        return msg_id
+    people.send = send_once
+    await m.answer_card(card, "ок")
+    for _ in range(4):
+        clock.t += 130
+        await m.tick()
+    assert "хочу тебя" not in people.sent_texts(555)
+
+
+async def test_the_owners_own_text_stays_their_text_after_a_setting_change(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик агента"])
+    real_typing = people.typing
+
+    async def typing_then_setting(user_id, seconds):
+        people.typing = real_typing
+        await m.command("chat_mode", "first:off")
+        people.incoming(555, "ау?")  # the person writes before the retry
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_setting
+    await m.answer_card(card, "мой собственный ответ")
+    for _ in range(2):
+        clock.t += 31
+        await m.tick()
+    assert "мой собственный ответ" in people.sent_texts(555)

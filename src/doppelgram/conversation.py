@@ -435,13 +435,15 @@ class ConversationStore:
         self.db.execute("DELETE FROM cards WHERE user_id=?", (user_id,))
 
     def set_outbox(self, user_id: int, upto: int, messages: list[str], send_at: float,
-                   approved: bool = False) -> None:
+                   approved: bool = False, owner_text: bool = False) -> None:
+        """`approved`: the owner said «ок» to it; `owner_text`: the owner wrote it (stored as 2)."""
         self.drop_cards(user_id)  # one pending action per chat
         self.db.execute("INSERT OR REPLACE INTO outbox VALUES(?,?,?,?,?)",
-                        (user_id, upto, json.dumps(messages, ensure_ascii=False), send_at, int(approved)))
+                        (user_id, upto, json.dumps(messages, ensure_ascii=False), send_at,
+                         2 if owner_text else int(approved)))
 
-    def due_outbox(self, now: float) -> list[tuple[int, int, list[str], bool]]:
-        return [(r[0], r[1], json.loads(r[2]), bool(r[3])) for r in self.db.execute(
+    def due_outbox(self, now: float) -> list[tuple[int, int, list[str], bool, bool]]:
+        return [(r[0], r[1], json.loads(r[2]), bool(r[3]), r[3] == 2) for r in self.db.execute(
             "SELECT user_id, upto, messages, approved FROM outbox WHERE send_at <= ?", (now,))]
 
     def trim_outbox(self, user_id: int, remaining: list[str]) -> None:
@@ -805,9 +807,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         now = self.clock()
         try:
-            for user_id, upto, messages, approved in self.store.due_outbox(now):
+            for user_id, upto, messages, approved, owner_text in self.store.due_outbox(now):
                 async with self.lock:
-                    await self._send_outbox(user_id, upto, messages, approved)
+                    await self._send_outbox(user_id, upto, messages, approved, owner_text)
                 if self.stopped:
                     return
             for person in self.store.due(now):
@@ -1139,18 +1141,22 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if current is not None and current.state == "paused":  # unless the owner took it over meanwhile
                 self.store.update(person.user_id, state="active", due_at=self.clock() + self.RETRY_S)
 
-    async def _send_outbox(self, user_id: int, upto: int, messages: list[str], approved: bool) -> None:
+    async def _send_outbox(self, user_id: int, upto: int, messages: list[str], approved: bool,
+                           owner_text: bool = False) -> None:
         if not self.store.outbox_is(user_id, upto, messages):
             return  # dropped or replaced since the due list was read (e.g. while another chat was typing)
         person = self.store.person(user_id)
         if person is None or person.state != "active" or self.stopped:
             self.store.drop_outbox(user_id)
             return
-        if not approved and (self.store.get(f"unchecked:{user_id}") or self.store.get(f"redecide:{user_id}")):
+        if self.store.get(f"redecide:{user_id}") or (not approved and self.store.get(f"unchecked:{user_id}")):
+            if approved:  # the chat changed after the owner approved it (e.g. a minor flag)
+                await self.say(f"{person.name}: одобренное сообщение не отправлено, диалог изменился "
+                               f"(например, выяснилось, что собеседнику меньше 18).")
             self._redecide(user_id)  # not verified yet, or to be answered anew: decide again first
             return
         if not approved and self.mode == "auto" and self._quiet_now() is None:
-            await self._deliver_queued(person, upto, messages, approved)
+            await self._deliver_queued(person, upto, messages, approved, owner_text)
             return
         self.store.drop_outbox(user_id)
         if not approved and self.mode != "auto":
@@ -1160,16 +1166,19 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         quiet_end = self._quiet_now()
         if quiet_end is not None:
-            self.store.set_outbox(user_id, upto, messages, quiet_end + self.rng.uniform(60, 1800), approved)
+            self.store.set_outbox(user_id, upto, messages, quiet_end + self.rng.uniform(60, 1800), approved,
+                                  owner_text)
             return
-        await self._deliver_queued(person, upto, messages, approved)
+        await self._deliver_queued(person, upto, messages, approved, owner_text)
 
-    async def _deliver_queued(self, person: Person, upto: int, messages: list[str], approved: bool) -> None:
+    async def _deliver_queued(self, person: Person, upto: int, messages: list[str], approved: bool,
+                              owner_text: bool = False) -> None:
         """Deliver a queued series. The outbox row stays until each message is sent (then it is trimmed), so
         a restart resumes the rest; afterwards the row is set to whatever should still be sent, or removed."""
         user_id = person.user_id
-        self.store.set_outbox(user_id, upto, messages, self.clock(), approved)  # in case it was dropped above
-        result = await self._deliver(person, upto, messages, approved=approved, from_outbox=True)
+        self.store.set_outbox(user_id, upto, messages, self.clock(), approved, owner_text)  # if dropped above
+        result = await self._deliver(person, upto, messages, approved=approved, owner_text=owner_text,
+                                     from_outbox=True)
         rest = messages[result.sent:]
         if self.store.get(f"redecide:{user_id}"):
             self.store.drop_outbox(user_id)  # answered anew: not with what was left of these messages
@@ -1178,14 +1187,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                f"изменился (например, выяснилось, что собеседнику меньше 18).")
             return
         if result.status == "capped":
-            self.store.set_outbox(user_id, upto, rest, self.clock() + 900, approved)
+            self.store.set_outbox(user_id, upto, rest, self.clock() + 900, approved, owner_text)
         elif result.status == "interrupted":
             # The owner changed something (a setting, this chat's state...): the rest is re-checked against
             # the current state when it comes up again (a takeover of this chat drops it then).
-            self.store.set_outbox(user_id, upto, rest, self.clock(), approved)
+            self.store.set_outbox(user_id, upto, rest, self.clock(), approved, owner_text)
             self.wake.set()
         elif result.status == "error":
-            self.store.set_outbox(user_id, upto, rest, self.clock() + 120, approved)
+            self.store.set_outbox(user_id, upto, rest, self.clock() + 120, approved, owner_text)
         else:
             self.store.drop_outbox(user_id)
             if result.status == "send_failed":
@@ -1221,7 +1230,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                         owner_text=owner_text, first_of_batch=i == 0, text=text)
             if status != "ok":
                 if status == "capped" and sent:
-                    self.store.set_outbox(person.user_id, upto, messages[i:], self.clock() + 900, approved)
+                    self.store.set_outbox(person.user_id, upto, messages[i:], self.clock() + 900, approved,
+                                          owner_text)
                 return Delivery(status, sent)
             try:
                 msg_id = await self.people.send(person.user_id, text)
@@ -1345,7 +1355,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         epoch = self._epoch_of(person.user_id)  # taken before the lock: a later "сам" still cancels this
         # A copy in the outbox until each message is out: a restart while waiting for the lock or typing
         # resumes what the owner approved (the lock keeps the queue from sending it twice meanwhile).
-        self.store.set_outbox(person.user_id, card["upto"], messages, self.clock() + 60, approved=True)
+        self.store.set_outbox(person.user_id, card["upto"], messages, self.clock() + 60, approved=True,
+                              owner_text=owner_text)
         async with self.lock:
             result = await self._deliver(person, card["upto"], messages, approved=True, owner_text=owner_text,
                                          epoch=epoch, from_outbox=True)
@@ -1354,7 +1365,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         keep_rest = (result.status == "interrupted" and rest and not redecide
                      and (self.store.person(person.user_id) or person).state in ("active", "paused"))
         if keep_rest:  # a setting changed mid-series: the queue sends the rest after re-checking
-            self.store.set_outbox(person.user_id, card["upto"], rest, self.clock(), approved=True)
+            self.store.set_outbox(person.user_id, card["upto"], rest, self.clock(), approved=True,
+                                  owner_text=owner_text)
             self.wake.set()
         elif not (result.status in ("capped", "error") and result.sent):
             self.store.drop_outbox(person.user_id)  # _deliver queued the rest itself in those two cases
@@ -1376,9 +1388,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                            f"сообщений за день). " + ("Остальное уйдёт позже." if result.sent else
                                                       "Ответьте на эту карточку ещё раз позже."))
         elif result.status == "error":
-            if result.sent:
+            if result.sent and not redecide:
                 self.store.set_outbox(person.user_id, card["upto"], messages[result.sent:], self.clock() + 120,
-                                      approved=True)
+                                      approved=True, owner_text=owner_text)
             else:
                 # Keep what the owner actually chose (their own text, if they replaced the draft).
                 self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], messages,
