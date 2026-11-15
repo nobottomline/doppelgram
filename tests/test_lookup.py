@@ -211,6 +211,10 @@ async def test_what_the_agent_says_about_the_owner_beyond_about_me_is_kept_and_r
     people.incoming(555, "а ты на чём ездишь?")
     m.llm.reply = {"action": "reply", "messages": ["на метро в основном"], "new_facts": ["ездит на метро"]}
     await answered(m, people, clock)
+    assert not any("about-me" in n for n in inbox)  # nothing is said until the message goes out
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["на метро в основном"]
     assert "чего нет в about-me" in inbox[-1] and "ездит на метро" in inbox[-1]
     notices = len(inbox)
     people.incoming(555, "а машина?")
@@ -317,3 +321,100 @@ async def test_eval_fails_a_reply_scenario_that_went_to_the_owner(tmp_path):
                   else {"action": "escalate", "category": "unclear", "messages": []})
     results = await evaluate(m.cfg, llm, only=["task_code"], out=lambda s: None)
     assert not results[0].ok and not results[0].expect_ok
+
+
+async def test_a_skipped_draft_leaves_no_fact_behind(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "а ты на чём ездишь?")
+    m.llm.reply = {"action": "reply", "messages": ["у меня своя машина"], "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "пропуск")
+    people.incoming(555, "алло")
+    m.llm.reply = {"action": "wait"}
+    await answered(m, people, clock)
+    assert "stay consistent" not in m.llm.calls[-1][1]["content"]
+    assert not any("about-me" in n for n in inbox)
+
+
+async def test_an_approved_draft_records_its_facts_when_sent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "а ты на чём ездишь?")
+    m.llm.reply = {"action": "reply", "messages": ["у меня своя машина"], "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "ок")
+    for _ in range(2):
+        clock.t += 31
+        await m.tick()
+    assert people.sent_texts(555) == ["у меня своя машина"] and any("есть машина" in n for n in inbox)
+
+
+async def test_facts_in_an_answer_to_the_owners_instruction_are_recorded(tmp_path):
+    from test_media_strangers import meeting_with_hold
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["не смогу, машина в ремонте"],
+                                 "new_facts": ["есть машина"]} if "owner's instruction" in msgs[1]["content"]
+                                else {"action": "wait"})
+    await m.answer_card(card, "не могу, откажись")
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "не смогу, машина в ремонте" in people.sent_texts(555)
+    assert any("есть машина" in n and "about-me" in n for n in inbox)
+
+
+async def test_the_owners_and_the_persons_names_never_reach_a_search(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    m.lookup = FakeLookup()
+    m.private_names = ["Григорий", "Петров", "grisha_p"]
+    await match(m)  # the person is "Маша"
+    people.incoming(555, "кто это?")
+    scripted(m, {"action": "lookup", "lookup": ["Маша место работы", "Григорий Петров университет",
+                                                 "grisha_p инстаграм", "что такое база"]},
+             {"action": "reply", "messages": ["а"]})
+    await answered(m, people, clock)
+    assert m.lookup.calls == [["что такое база"]]
+
+
+async def test_a_greeting_from_a_spammy_profile_is_still_classified(tmp_path):
+    from test_media_strangers import classifier, stranger_writes
+    m, people, inbox, clock = make(tmp_path, mode="auto", strangers="lead")
+    m.llm.reply = classifier("spam")
+
+    async def bio(user_id):
+        return "казино и крипта, заработок без вложений"
+    people.profile = bio
+    await stranger_writes(m, people, clock, text="👋")
+    assert any("unknown Telegram user wrote first" in c[0]["content"] for c in m.llm.calls)
+    assert m.store.person(777).state == "blocked" and people.sent_texts(777) == []
+
+
+async def test_eval_does_not_credit_an_escalation_made_before_the_trap(tmp_path):
+    from test_conversation import FakeLLM
+
+    from doppelgram.evaluate import evaluate
+    m, people, inbox, clock = make(tmp_path)
+    llm = FakeLLM(lambda msgs: {"pass": True, "why": ""} if "You grade" in msgs[0]["content"]
+                  else {"action": "escalate", "category": "ai_question", "messages": []})
+    results = await evaluate(m.cfg, llm, only=["bot_direct"], out=lambda s: None)
+    assert not results[0].ok and "вводное приветствие" in results[0].error
+
+
+async def test_facts_of_a_skipped_draft_never_ride_on_a_later_message(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а ты на чём ездишь?")
+    m.llm.reply = {"action": "reply", "messages": ["у меня своя машина"], "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    await m.answer_card(9000 + len(inbox), "пропуск")
+    await m.command("chat_mode", "auto")
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну расписание и напишу"],
+                   "slots": "суббота", "messages": ["давай в субботу?"]}
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == ["гляну расписание и напишу"]
+    assert not any("есть машина" in n for n in inbox if "about-me" in n)

@@ -664,6 +664,7 @@ class ConversationManager:
         self.on_restricted = on_restricted
         self.transcriber = transcriber  # speech.Transcriber, or None: voice messages then go to the owner
         self.lookup = lookup  # lookup.WebLookup, or None: the agent asks the person about what it does not know
+        self.private_names: list[str] = []  # the owner's own names: never part of a web search
         self._transcripts: dict[int, str] = {}  # message id -> transcript, in memory only
         self.wake = asyncio.Event()
         self.lock = asyncio.Lock()
@@ -882,7 +883,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.update(person.user_id, card=scrub_text(bio))
         kind, reason = "unclear", ""
         texts = [m.text for m in history if m.text]
-        if self.strangers == "lead" and texts and all(_is_greeting(t) for t in texts):
+        if self.strangers == "lead" and texts and all(_is_greeting(t) for t in texts) and not _SPAM_RE.search(bio):
             kind = "dating"  # "привет", "👋", a sticker: someone getting acquainted, no need to ask the model
         elif self.strangers == "lead" and not self._over_budget(self.clock()):
             kind, reason = await self._classify_stranger(text, bio)
@@ -1358,7 +1359,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                                  written_at=now)
             return
         self._schedule_follow_up(person.user_id, decision, now)
-        await self._note_facts(person, decision, messages)
+        self._pend_facts(person.user_id, decision, messages)
         if self.mode == "auto":
             delay = self._reply_delay(history)
             if self._night_end() is not None:  # a lively chat at night: answer within minutes or not at all
@@ -1449,7 +1450,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 classify_outgoing(t, intimacy=self.intimacy) for t in messages):
             return  # the model let it be (or wanted something the owner decides): no follow-up
         self.store.set(f"followed:{person.user_id}", str(latest))
-        await self._note_facts(person, decision, messages)
+        self._pend_facts(person.user_id, decision, messages)
         if self.mode == "auto":
             self.store.set_outbox(person.user_id, latest, messages, now + self.rng.uniform(5, 120))
             self.wake.set()
@@ -1477,7 +1478,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         # The owner decided the meeting itself; everything else the agent never sends still applies.
         risky = [c for c in (classify_outgoing(t, intimacy=self.intimacy) for t in messages)
                  if c not in (None, "meeting", "call")]
-        return messages if messages and not risky else None
+        if not messages or risky:
+            return None
+        self._pend_facts(person.user_id, decision, messages)
+        return messages
 
     def _due_follow_ups(self, now: float) -> None:
         for key, value in self.store.kv_prefix("follow_up:"):
@@ -1613,7 +1617,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
     async def _look_up(self, person: Person, raw) -> list[Finding]:
         """Findings for the model's queries: cached ones, then one web search for the rest. A failed search
         gives "nothing found" (the agent then asks the person), never an error in the chat."""
-        queries = clean_queries(raw, [person.name, person.username or ""])
+        names = [person.name, person.username or "", *self.private_names]
+        queries = clean_queries(raw, [part for n in names if n for part in re.split(r"[\s_.-]+", n)])
         now = self.clock()
         cached = {q: decode(q, self.store.get(f"lookup:{q.lower()}"), now, self.cfg.lookup_cache_h * 3600)
                   for q in queries}
@@ -1644,19 +1649,33 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return []
         return [str(f) for f in value if isinstance(f, str)] if isinstance(value, list) else []
 
-    async def _note_facts(self, person: Person, decision: dict, messages: list[str]) -> None:
-        """What the agent says about the owner beyond about-me: kept for consistency, and the owner is told."""
+    def _pend_facts(self, user_id: int, decision: dict, messages: list[str]) -> None:
+        """What these messages say about the owner beyond about-me. It counts as said only once one of them
+        actually goes out (see _commit_facts): a skipped draft or a dropped reply leaves nothing behind."""
         raw = decision.get("new_facts")
         facts = [scrub_text(" ".join(f.split()), 200) for f in raw if isinstance(f, str) and f.strip()][:3] \
             if isinstance(raw, list) else []
-        if not facts or not messages:
+        if facts and messages:
+            self.store.set(f"facts:{user_id}", json.dumps({"texts": messages, "facts": facts}, ensure_ascii=False))
+        else:
+            self.store.unset(f"facts:{user_id}")
+
+    async def _commit_facts(self, person: Person, text: str) -> None:
+        """A message went out: if it carried facts about the owner, they are kept for consistency and the
+        owner is told."""
+        try:
+            pending = json.loads(self.store.get(f"facts:{person.user_id}") or "{}")
+        except ValueError:
+            pending = {}
+        if not isinstance(pending, dict) or text not in (pending.get("texts") or []):
             return
+        self.store.unset(f"facts:{person.user_id}")
         said = self._said(person.user_id)
-        added = [f for f in facts if f not in said]
+        added = [f for f in pending.get("facts") or [] if isinstance(f, str) and f not in said]
         if not added:
             return
         self.store.set(f"said:{person.user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
-        await self.say(f"ℹ️ {person.name}: агент говорит о вас то, чего нет в about-me: "
+        await self.say(f"ℹ️ {person.name}: агент сказал о вас то, чего нет в about-me: "
                        + "; ".join(f"«{f}»" for f in added)
                        + ". Если это неправда, допишите about-me.md или заберите диалог: /self "
                        + str(person.user_id))
@@ -1834,6 +1853,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 if i == 0:
                     self.store.unset(f"reply_to:{person.user_id}")
                 self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:], messages[i:])
+                if not owner_text:
+                    await self._commit_facts(person, text)
                 continue
             # ---- synchronous gate: nothing below may await before people.send() ----
             status, latest = self._gate(person.user_id, upto, history, epoch, approved=approved,
@@ -1868,6 +1889,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # The queue holds only what is still unsent: a restart resumes, never repeats.
             self.store.commit_send(person.user_id, msg_id, self.clock(), latest if owner_text else upto,
                                    messages[i + 1:] if from_outbox else None, messages[i:] if from_outbox else None)
+            if not owner_text:
+                await self._commit_facts(person, text)
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         after = self.store.get(f"follow_up_after:{person.user_id}")

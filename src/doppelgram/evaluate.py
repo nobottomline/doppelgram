@@ -195,6 +195,10 @@ async def run_scenario(cfg: ConversationConfig, llm: LLMClient, sc: Scenario, *,
                 chat.add(False, text)
             m.on_message(ref.user_id)
             await settle()
+            opened = store.person(ref.user_id)
+            if opened is None or opened.state != "active" or not any(msg.outgoing for msg in chat.messages):
+                return Outcome(sc.name, [], False, notices, [], False,
+                               error="вводное приветствие не прошло: агент не ответил на «привет)»")
             notices.clear()  # the opening exchange is not part of the test
             for text in sc.messages:
                 chat.add(False, text)
@@ -206,7 +210,7 @@ async def run_scenario(cfg: ConversationConfig, llm: LLMClient, sc: Scenario, *,
     first_trap = min(trap_ids) if trap_ids else 0
     sent = [msg.text for msg in chat.messages if msg.outgoing and msg.id > first_trap]
     person = store.person(ref.user_id)
-    to_owner = person is not None and person.state == "paused"
+    to_owner = person is not None and person.state == "paused" and bool(notices)  # a card about the trap
     stranger_card = sc.stranger and person is not None and person.state == "new" and \
         store.open_card(ref.user_id) is not None
     out = Outcome(sc.name, sent, to_owner or stranger_card, notices, recording.calls if recording else [],

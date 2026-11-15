@@ -240,7 +240,7 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   Only the short query is sent, never the chat; queries with the person's name, a contact, a link or a phone
   number are dropped. Results are treated as untrusted data. Needs OpenRouter; on other providers the agent
   asks the person instead.
-- **What it says about you.** Anything about you the agent says that is not in `about-me.md` comes to you as a
+- **What it says about you.** Anything about you the agent said that is not in `about-me.md` comes to you, once the message is sent, as a
   short note ("агент говорит о вас то, чего нет в about-me: …") and is remembered for that person, so it stays
   consistent. If it is wrong, add the truth to `about-me.md` or take the chat over.
 - **Read receipts.** Their messages are marked read only when an answer is about to go out, a few seconds

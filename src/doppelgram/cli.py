@@ -180,6 +180,9 @@ async def cmd_run(cfg, args) -> int:
             conversations = ConversationManager(conv_cfg, llm, PeopleChannel(account),
                                                 ConversationStore(cfg.data_dir / "conversations.sqlite3"),
                                                 account.notify_owner, transcriber=transcriber, lookup=lookup)
+            me = account.me
+            conversations.private_names = [n for n in (getattr(me, "first_name", None), getattr(me, "last_name", None),
+                                                       getattr(me, "username", None)) if n]
         supervisor = Supervisor(agents, account.notify_owner, profiles, conversations,
                                 control=Store(cfg.data_dir / "control.sqlite3"), llm=llm,
                                 allowed_models=[cfg.llm.model, *cfg.llm.allowed_models])
