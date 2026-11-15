@@ -1698,6 +1698,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         self.store.drop_outbox(person.user_id)
         self._bump(person.user_id)  # any automatic send prepared for this chat before this answer is void
         self.store.unset(f"hold:{person.user_id}")
+        # Taken now, before anything is awaited: a /self, another answer or a minor flag arriving while the
+        # agent writes or notifies cancels this send at its gate.
+        answer_epoch = self._epoch_of(person.user_id)
         if card["kind"] == "stranger":
             if word in ("игнор", "нет", "пропуск", "ignore", "skip"):
                 self._block(person.user_id)
@@ -1781,7 +1784,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.add_style(text.strip(), self.clock())
         if person.state == "paused":
             self.store.update(person.user_id, state="active")  # the owner answered the escalation
-        epoch = self._epoch_of(person.user_id)  # taken before the lock: a later "сам" still cancels this
+        epoch = answer_epoch
         # A copy in the outbox until each message is out: a restart while waiting for the lock or typing
         # resumes what the owner approved (the lock keeps the queue from sending it twice meanwhile).
         self.store.set_outbox(person.user_id, card["upto"], messages, self.clock() + 60, approved=True,

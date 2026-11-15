@@ -1952,3 +1952,24 @@ async def test_switching_to_approve_keeps_the_meeting_card(tmp_path):
                                 if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
     await m.answer_card(card, "суббота в 18")
     assert people.sent_texts(555) == ["в субботу в 18?"]
+
+
+@pytest.mark.parametrize("event", ["self", "minor"])
+async def test_events_while_the_owner_is_told_what_the_agent_writes_cancel_the_send(tmp_path, event):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
+                                if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
+    real_notify = m._notify
+
+    async def notify(text, image=None):
+        if text.startswith("Пишу"):
+            m._notify = real_notify
+            if event == "self":
+                await m.command("self", 555)
+            else:
+                await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10,
+                                 minor=True)
+        return await real_notify(text, image)
+    m._notify = notify
+    await m.answer_card(card, "суббота в 18")
+    assert "в субботу в 18?" not in people.sent_texts(555)
