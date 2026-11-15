@@ -1765,8 +1765,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
 
     def _tame(self, messages: list[str], history: list[ChatMessage]) -> list[str]:
         """Models put ")" in almost every message; the owner does it far less (see style.md). A message keeps its
-        smiley only if the share of smileys among the last messages, with it, stays within the owner's rate (at the
-        start of a chat the missing messages count as plain); otherwise it is taken off."""
+        smiley only if the share of smileys among the last messages, with it, stays within the owner's rate;
+        otherwise it is taken off. A new chat counts as if just enough plain messages (1/rate) came before, so the
+        first message may have one but there is no burst: padding the whole window would allow ten in a row at 50%."""
         rate = self._smiley_rate()
         span = 20  # the last messages the share is counted over
         recent = [m.text or "" for m in history if m.outgoing][-span:]
