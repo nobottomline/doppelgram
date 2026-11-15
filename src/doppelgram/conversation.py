@@ -384,10 +384,12 @@ def _strip_smiley(text: str) -> str:
     t = text
     for start, end in reversed(_smiley_spans(text)):
         left, right = t[:start].rstrip(" \t"), t[end:].lstrip(" \t")
-        if left and right and not right.startswith("\n"):
-            t = left + (" " if left[-1] in ",.!?…:;" else ", ") + right
+        if not left or not right or left[-1] in "\n(" or right[0] in "\n,.!?…:;)":
+            t = left + right  # a line or a bracket starts, or punctuation already ends the phrase
+        elif left[-1] in ",.!?…:;":
+            t = left + " " + right
         else:
-            t = left + right
+            t = left + ", " + right
     return re.sub(r"[ \t]{2,}", " ", t).strip()
 
 

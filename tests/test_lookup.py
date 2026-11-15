@@ -635,6 +635,9 @@ def test_a_list_is_still_caught_after_taming(tmp_path):
     assert m._tame(["люблю читать (когда есть время :)) особенно вечером)"], []) == \
         ["люблю читать (когда есть время, особенно вечером)"]
     assert m._tame(["(да)) ну ладно"], []) == ["(да), ну ладно"]
+    assert m._tame(["люблю читать (когда есть время :), особенно вечером)"], []) == \
+        ["люблю читать (когда есть время, особенно вечером)"]
+    assert m._tame(["ну да :). а ты?", "ок ;-)!"], []) == ["ну да. а ты?", "ок!"]
 
 
 def tamer(tmp_path, style_lines):
@@ -673,3 +676,34 @@ async def test_the_agents_replies_follow_the_owners_smiley_rate(tmp_path):
     clock.t += 31
     await m.tick()
     assert people.sent_texts(555) == ["привет", "как день?"]
+
+
+def test_taking_smileys_off_never_corrupts_the_text():
+    """Random messages with words, brackets, smileys and punctuation: no smiley left, real brackets kept, no word
+    lost or glued, no doubled punctuation the message did not have."""
+    import random
+    import re
+
+    from doppelgram.conversation import _has_smiley, _strip_smiley
+    rng = random.Random(7)
+    words = ["да", "ну", "привет", "как", "ахах", "ок", "время"]
+    doubled = r"[,.!?]\s*,|,\s*[.!?]|\s,|,,|\(\s|\n,"
+    for _ in range(5000):
+        parts, depth = [], 0
+        for _ in range(rng.randint(1, 6)):
+            r = rng.random()
+            if r < 0.15:
+                parts.append("(")
+                depth += 1
+            elif r < 0.25 and depth:
+                parts.append(")")
+                depth -= 1
+            elif r < 0.45:
+                parts.append(rng.choice([")", "))", ":)", ":-)", ";)", ":))", "))) "]))
+            parts += [rng.choice(words), rng.choice([" ", " ", ", ", ". ", "? ", "! ", "\n"])]
+        text = ("".join(parts) + ")" * depth).strip()
+        out = _strip_smiley(text)
+        assert not _has_smiley(out), text
+        assert out.count("(") == out.count(")") == text.count("("), text
+        assert re.findall(r"[^\W\d_]+", out) == re.findall(r"[^\W\d_]+", text), text
+        assert not re.search(doubled, out) or re.search(doubled, text), text
