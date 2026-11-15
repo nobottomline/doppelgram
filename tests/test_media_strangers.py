@@ -489,22 +489,23 @@ async def test_a_paid_answer_without_a_transcript_counts_against_the_budget():
 
 
 # ------------------------------------------------------------------ second review regressions
-async def test_wrote_before_asks_the_server_for_the_accounts_own_messages():
-    from telethon.tl import functions, types
+async def test_wrote_before_scans_the_history_for_the_accounts_own_messages():
+    from types import SimpleNamespace
 
     from doppelgram.telegram import PeopleChannel
 
     class Client:
-        async def __call__(self, request):
-            self.request = request
-            return types.messages.Messages(messages=[], topics=[], chats=[], users=[])
+        def __init__(self, outs):
+            self.outs = outs
 
-    class Account:
-        client = Client()
-    channel = PeopleChannel(Account())
-    assert await channel.wrote_before(777) is False
-    req = Account.client.request
-    assert isinstance(req, functions.messages.SearchRequest) and isinstance(req.from_id, types.InputPeerSelf)
+        async def get_messages(self, peer, limit):
+            self.limit = limit
+            return [SimpleNamespace(out=o) for o in self.outs]
+
+    for outs, expected in (([False] * 999 + [True], True), ([False, False], False), ([], False)):
+        account = SimpleNamespace(client=Client(outs))
+        assert await PeopleChannel(account).wrote_before(777) is expected
+    assert account.client.limit == PeopleChannel.WROTE_BEFORE_SCAN
 
 
 async def test_a_later_minor_match_drops_what_was_queued(tmp_path):
@@ -583,3 +584,44 @@ async def test_a_queued_reply_is_dropped_when_the_person_turns_out_to_be_a_minor
     clock.t += 31
     await m.tick()
     assert people.sent_texts(555) == []
+
+
+async def test_a_late_minor_flag_cancels_the_answer_being_composed(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+
+    def answer(messages):
+        m.store.update(555, minor=1)  # a later match notice arrives while the model is answering
+        return {"action": "reply", "messages": ["ты такая сексуальная"]}
+    m.llm.reply = answer
+    await answered(m, people, clock)
+    m.llm.reply = {"action": "reply", "messages": ["привет) как день?"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "ты такая сексуальная" not in people.sent_texts(555)
+    assert "under 18" in prompt_of(m)[0]
+
+
+async def test_a_match_with_an_old_chat_stays_with_the_owner(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=True)
+    people.owner_writes(555, "привет, давно не общались")
+    for i in range(40):
+        people.incoming(555, f"сообщение {i}")
+    await match(m)
+    await m.tick()
+    assert m.store.person(555).state == "owner" and "Вы уже переписываетесь" in inbox[-1] and m.llm.calls == []
+
+
+@pytest.mark.parametrize("text, kind", [("возьму твой член в рот", "explicit"), ("член клуба", None),
+                                        ("я пошла спать", None), ("это пошлость", "explicit")])
+def test_explicit_words_in_context(text, kind):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text, intimacy=False) == kind
+
+
+@pytest.mark.parametrize("text, money", [("скину тебе 500 на карту", True), ("не заплачу меньше тысячи", True)])
+def test_payment_promises_with_words_between(text, money):
+    from doppelgram.conversation import classify_outgoing
+    assert (classify_outgoing(text) == "money") is money

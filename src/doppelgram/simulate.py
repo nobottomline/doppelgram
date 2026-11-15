@@ -53,6 +53,15 @@ class _Chat:
     async def typing(self, user_id, seconds):
         return None
 
+    async def wrote_before(self, user_id):
+        return any(m.outgoing for m in self.messages)
+
+    async def download(self, user_id, msg_id, *, thumb=False):
+        return None
+
+    async def profile(self, user_id):
+        return ""
+
 
 class _Clock:
     def __init__(self):

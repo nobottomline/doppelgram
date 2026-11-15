@@ -84,19 +84,23 @@ _HUMAN_RE = re.compile(
     r"|\bэто\s+(?:правда\s+|реально\s+|точно\s+)?ты\s+(?:пишешь|отвечаешь)"
     r"|\bкто\s+(?:мне\s+)?(?:пишет|отвечает)\s*\?"
     r"|\bавтоматическ\w*\s+(?:ответ|сообщени)\w*", re.I)
-_EXPLICIT_RE = re.compile(r"(секс|интим|нюдс|nudes|голая|голый|раздет|18\+|пошл)", re.I)
+_EXPLICIT_RE = re.compile(r"(секс|интим|нюдс|nudes|голая|голый|раздет|18\+|пошлост|пошляк|пошлят|пошленьк|"
+                          r"пошлые|пошлый)", re.I)
 # What the agent itself must never send: a link, a handle or a phone number (it shares no contacts), and a
 # promise to pay. Words like "инста" are fine: "я не сижу в инсте" is an answer, not a contact.
 _CONTACT_OUT_RE = re.compile(r"(https?://|t\.me/|www\.|@\w{4,}|(?:\+7|8)[\s\-()]*\d{3}[\s\-()]*\d{3}[\s\-]*\d{2}"
                              r"[\s\-]*\d{2}|vk\.com)", re.I)
-_PAY_OUT_RE = re.compile(r"(переведу|скину\s+(?:деньг|на\s+карт|\d)|номер\s+карты|реквизит|одолжу|займу\s+тебе|"
-                         r"оплачу|заплачу)", re.I)
-_NEGATED_RE = re.compile(r"\b(?:не|ни)\s+\w+", re.I)  # "не заплачу" is a refusal, not a promise
+_PAY_OUT_RE = re.compile(r"(переведу|скину\s+(?:\w+\s+){0,2}?(?:деньг|на\s+карт|\d)|номер\s+карты|реквизит|одолжу|"
+                         r"займу\s+тебе|оплачу|заплачу)", re.I)
+# "не заплачу" is a refusal, not a promise; "не заплачу меньше тысячи" still promises a sum.
+_NEGATED_RE = re.compile(r"\b(?:не|ни)\s+\w+", re.I)
+_AMOUNT_HINT_RE = re.compile(r"(меньше|больше|минимум|хотя\s+бы|не\s+более|не\s+менее)", re.I)
 # Graphic sexual words: never sent by the agent and never answered by it, even with intimacy allowed (the
 # owner takes over). Flirting and talking about intimacy in general words stay with the agent.
 _GRAPHIC_RE = re.compile(r"\b(?:ху[йё]|пизд|еба[тл]|ебл|ебу\b|трах(?:а|н|ну|ать|ал|ни)|конч(?:и|ить|ил|ила|у)\b|"
                          r"соса(?:ть|ла|л|ешь)\b|отсос|минет|кунилинг|куни\b|дроч|анал(?:\b|ьн)|вагин|оргазм|сиськ|"
-                         r"голая\s+фот|нюдс|секстинг)|\bnudes\b", re.I)
+                         r"голая\s+фот|нюдс|секстинг|хер\b)|\b(?:мой|твой|его|свой)\s+член|\bчлен\s+(?:в|во)\b|"
+                         r"\bnudes\b", re.I)
 _SPAM_RE = re.compile(r"(https?://|t\.me/|www\.|заработ|доход\w*\s+от|крипт|инвест|казино|ставк[иа]|бонус|промокод|"
                       r"подпис(?:ывайся|аться)\s+на|переходи\s+по|акци[яи]|скидк|выигр)", re.I)
 _CALL_RE = re.compile(r"(созвон|позвон|звонок|по\s+видео|видеосвяз|набер[уиё])", re.I)
@@ -137,7 +141,8 @@ def classify_outgoing(text: str, *, intimacy: bool = False) -> str | None:
     """What the agent itself wants to write that only the owner may send: a meeting or a call, contacts, a
     promise of money, anything about being a bot (it must never deny it, so it does not discuss it at all),
     and intimate topics unless the owner allowed them."""
-    if _PAY_OUT_RE.search(_NEGATED_RE.sub(" ", text or "")):
+    payment_text = (text or "") if _AMOUNT_HINT_RE.search(text or "") else _NEGATED_RE.sub(" ", text or "")
+    if _PAY_OUT_RE.search(payment_text):
         return "money"
     checks = [("ai_question", _AI_RE), ("contact", _CONTACT_OUT_RE), ("explicit", _GRAPHIC_RE)]
     if not intimacy:
@@ -555,6 +560,19 @@ class ConversationManager:
         if known is not None:
             return
         self.allowed.add(ref.user_id)
+        try:
+            talking = await self.people.wrote_before(ref.user_id)
+        except AccountRestricted as exc:
+            self._trip(str(exc))
+            return
+        except TransportError as exc:  # incl. a flood wait: recent owner messages are still caught later
+            log.warning("cannot check earlier messages with %s: %s", ref.user_id, exc)
+            talking = False
+        if talking:  # the owner already writes to this person: the agent stays out
+            self.store.update(ref.user_id, state="owner")
+            await self.say(f"[{bot}] Вы уже переписываетесь с {ref.name}: агент не вмешивается. "
+                           f"Передать агенту: /lead {ref.user_id}")
+            return
         if self.may_write_first(score):
             self.store.update(ref.user_id, due_at=now)
             self.wake.set()
@@ -921,6 +939,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.update(person.user_id, due_at=now + 3600)
             return
         action, raw_messages, decision = parse_reply(await self._compose(person, history, images))
+        fresh = self.store.person(person.user_id)
+        if fresh is None or fresh.state != "active" or fresh.minor != person.minor:
+            # Something about this person changed while the model was answering (a takeover, a block, a
+            # minor flag from a later match): decide again with what is known now.
+            if fresh is not None and fresh.state == "active":
+                self.store.update(person.user_id, due_at=self.clock())
+                self.wake.set()
+            return
         if decision.get("memory"):
             self.store.update(person.user_id, memory=scrub_text(str(decision["memory"]), 1500))
         if action == "wait":

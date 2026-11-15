@@ -10,7 +10,7 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from telethon import TelegramClient, events, functions, helpers, types
+from telethon import TelegramClient, events, functions, helpers
 from telethon import errors as tg_errors
 
 from .config import Config, Target
@@ -498,6 +498,7 @@ class PeopleChannel:
         return out
 
     MAX_DOWNLOAD = 20 * 1024 * 1024
+    WROTE_BEFORE_SCAN = 1000
 
     async def download(self, user_id: int, msg_id: int, *, thumb: bool = False) -> bytes | None:
         msg = await _call(self.client.get_messages(user_id, ids=msg_id))
@@ -516,12 +517,10 @@ class PeopleChannel:
 
     async def wrote_before(self, user_id: int) -> bool:
         """Whether this account ever sent anything in the chat: then it is not a stranger's first message."""
-        # A server-side search by sender: get_messages(from_user=...) filters a private chat only locally,
-        # within the fetched page, and would miss anything older.
-        found = await _call(self.client(functions.messages.SearchRequest(
-            peer=user_id, q="", filter=types.InputMessagesFilterEmpty(), min_date=None, max_date=None,
-            offset_id=0, add_offset=0, limit=1, max_id=0, min_id=0, hash=0, from_id=types.InputPeerSelf())))
-        return bool(getattr(found, "messages", None))
+        # Telegram ignores a sender filter in private chats, so the history itself is scanned (once per
+        # stranger or match, up to WROTE_BEFORE_SCAN messages back).
+        msgs = await _call(self.client.get_messages(user_id, limit=self.WROTE_BEFORE_SCAN))
+        return any(getattr(m, "out", False) for m in msgs or [])
 
     async def profile(self, user_id: int) -> str:
         full = await _call(self.client(functions.users.GetFullUserRequest(user_id)))
