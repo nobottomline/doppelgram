@@ -1680,9 +1680,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         said = self._said(user_id)
         added = [f for f in pending.get("facts") or [] if isinstance(f, str) and f not in said]
-        if added:  # all of it is written before the pending entry goes: a crash in between repeats, never loses
+        if added:  # the note first, then what was said, then the pending entry: a crash anywhere repeats, never loses
+            note = self._facts_note(user_id)
+            self.store.set(f"facts_note:{user_id}", json.dumps(note + [f for f in added if f not in note],
+                                                               ensure_ascii=False))
             self.store.set(f"said:{user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
-            self.store.set(f"facts_note:{user_id}", json.dumps(self._facts_note(user_id) + added, ensure_ascii=False))
         self.store.unset(f"facts:{user_id}")
 
     def _facts_note(self, user_id: int) -> list[str]:

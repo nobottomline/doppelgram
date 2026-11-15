@@ -43,8 +43,8 @@ class SearchError(RuntimeError):
 
 def _short_name_in(name: str, words: set[str]) -> bool:
     stem = name[:-1] if len(name) == 3 and name[-1] in "аяоеиыуюэ" else name
-    longest = len(name) + (2 if len(name) == 3 else 1)  # "Ани", "Аней"; "Яна", "Яну" (not "лист" for "Ли")
-    return any(w.startswith(stem) and len(w) <= longest for w in words)
+    # "Ани", "Аней", "Яну", "Яном". A few ordinary words go too ("лист" for "Ли"): privacy first, the agent asks.
+    return any(w.startswith(stem) and len(w) <= len(name) + 2 for w in words)
 
 
 def clean_queries(raw, private_words: list[str], limit: int = 2) -> list[str]:

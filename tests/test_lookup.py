@@ -423,7 +423,7 @@ async def test_facts_of_a_skipped_draft_never_ride_on_a_later_message(tmp_path):
 def test_short_names_are_dropped_as_whole_words_only():
     private = ["Ян", "Ли", "li_wu", "Маша"]
     assert clean_queries(["Ян Ли университет", "li_wu место работы", "Машей зовут", "янтарь купить",
-                          "лист бумаги"], private) == ["янтарь купить", "лист бумаги"]
+                          "лиса фото"], private) == ["янтарь купить"]
 
 
 async def test_facts_in_a_meeting_draft_are_recorded_when_the_owner_sends_it(tmp_path):
@@ -557,8 +557,8 @@ def test_a_crash_while_keeping_facts_never_loses_them(tmp_path):
 
 
 def test_declined_short_names_never_reach_a_search():
-    assert clean_queries(["подарок для Ани", "с Аней в кино", "Яну написать", "лист бумаги", "анализ рынка"],
-                         ["Аня", "Ян", "Ли"]) == ["лист бумаги", "анализ рынка"]
+    assert clean_queries(["подарок для Ани", "с Аней в кино", "Яну написать", "работа с Яном", "анализ рынка"],
+                         ["Аня", "Ян", "Ли"]) == ["анализ рынка"]
 
 
 def test_a_search_never_falls_back_to_another_model():
@@ -584,3 +584,24 @@ async def test_a_series_cut_after_its_first_message_still_counts_its_facts(tmp_p
     m.people.send = real
     assert people.sent_texts(555) == ["у меня своя машина"]
     assert m._said(555) == ["есть машина"] and any("есть машина" in n for n in inbox if "about-me" in n)
+
+
+
+def test_a_crash_between_the_note_and_the_record_never_loses_the_note(tmp_path):
+    m, people, inbox, clock = make(tmp_path)
+    m._pend_facts(555, {"new_facts": ["есть машина"]}, ["а"])
+    real = m.store.set
+
+    writes = []
+
+    def crash_on_the_second_write(key, value):  # whichever of the note and the record comes second
+        writes.append(key)
+        if len(writes) == 2:
+            raise RuntimeError("killed")
+        real(key, value)
+    m.store.set = crash_on_the_second_write
+    with pytest.raises(RuntimeError):
+        m._facts_sent(555, "а")
+    m.store.set = real
+    m._facts_sent(555, "а")  # the recovery repeats it
+    assert m._facts_note(555) == ["есть машина"] and m._said(555) == ["есть машина"]
