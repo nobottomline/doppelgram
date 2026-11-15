@@ -605,3 +605,54 @@ def test_a_crash_between_the_note_and_the_record_never_loses_the_note(tmp_path):
     m.store.set = real
     m._facts_sent(555, "а")  # the recovery repeats it
     assert m._facts_note(555) == ["есть машина"] and m._said(555) == ["есть машина"]
+
+
+# ------------------------------------------------------------------ ")" as often as the owner puts it
+def test_smileys_are_found_and_taken_off_cleanly():
+    from doppelgram.conversation import _has_smiley, _strip_smiley
+    assert _has_smiley("ахах)") and _has_smiley("ну да))") and _has_smiley(":)")
+    assert not _has_smiley("встреча (если что) завтра") and not _has_smiley("привет")
+    assert _strip_smiley("ахах) ну да") == "ахах, ну да"
+    assert _strip_smiley("всё не уместится) учусь в плехе") == "всё не уместится, учусь в плехе"
+    assert _strip_smiley("правда?) а ты") == "правда? а ты" and _strip_smiley("ну да, конечно)") == "ну да, конечно"
+    assert _strip_smiley("ну да))") == "ну да" and _strip_smiley("ок :)") == "ок"
+    assert _strip_smiley("в субботу (если получится))") == "в субботу (если получится)"
+    assert _strip_smiley(")") == ""
+
+
+def tamer(tmp_path, style_lines):
+    (tmp_path / "style.md").write_text("\n".join(style_lines), encoding="utf-8")
+    m, people, inbox, clock = make(tmp_path)
+    return m
+
+
+def test_the_owners_rate_spaces_out_smileys(tmp_path):
+    from doppelgram.conversation import ChatMessage
+    m = tamer(tmp_path, ["да)"] + ["ну да"] * 11)  # one in twelve
+    assert m._tame(["привет)", "как ты)"], []) == ["привет)", "как ты"]
+    recent = [ChatMessage(i, True, "ок)" if i == 1 else "ок", 0.0) for i in range(1, 6)]
+    assert m._tame(["ахах)"], recent) == ["ахах"]  # one went out five messages ago
+    old = [ChatMessage(i, True, "ок)" if i == 1 else "ок", 0.0) for i in range(1, 14)]
+    assert m._tame(["ахах)"], old) == ["ахах)"]  # twelve plain ones since
+
+
+def test_no_smileys_in_the_style_means_none_at_all(tmp_path):
+    m = tamer(tmp_path, ["привет", "ну да"])
+    assert m._tame(["привет)", ")", "ну да))"], []) == ["привет", "ну да"]
+
+
+def test_an_owner_who_always_smiles_keeps_every_smiley(tmp_path):
+    m = tamer(tmp_path, ["привет)", "да)"])
+    assert m._tame(["привет)", "как ты)"], []) == ["привет)", "как ты)"]
+
+
+async def test_the_agents_replies_follow_the_owners_smiley_rate(tmp_path):
+    (tmp_path / "style.md").write_text("привет\nну да\nахах", encoding="utf-8")
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, style_file=tmp_path / "style.md")
+    await match(m)
+    people.incoming(555, "привет")
+    m.llm.reply = {"action": "reply", "messages": ["привет)", "как день?)"]}
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == ["привет", "как день?"]
