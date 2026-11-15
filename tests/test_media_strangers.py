@@ -1110,3 +1110,59 @@ async def test_a_new_message_does_not_replace_the_owners_unsent_text(tmp_path):
     await m.tick()  # must not draft over the owner's text
     await m.answer_card(card, "ок")
     assert people.sent_texts(555) == ["мой текст"]
+
+
+async def test_an_escalation_draft_written_before_a_minor_flag_is_not_sent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "давай встретимся вечером?")
+    m.llm.reply = {"action": "reply", "messages": ["давай, хочу тебя"]}
+    await answered(m, people, clock)
+    card = 9000 + len(inbox)
+    clock.t += 5
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+    await m.answer_card(card, "ок")
+    assert people.sent_texts(555) == [] and "меньше 18" in inbox[-1]
+
+
+async def test_a_draft_whose_card_appears_after_a_minor_flag_is_not_sent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["хочу тебя"]}
+    real_notify = m._notify
+
+    async def notify_then_flag(text, image=None):
+        m._notify = real_notify
+        clock.t += 1
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        return await real_notify(text, image)
+    m._notify = notify_then_flag
+    await answered(m, people, clock)
+    drafts = [i for i, t in enumerate(inbox) if "Черновик" in t]
+    await m.answer_card(9000 + drafts[-1] + 1, "ок")
+    assert people.sent_texts(555) == []
+
+
+async def test_the_owners_queued_text_is_not_replaced_by_a_new_draft(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
+    real_typing, real_history = people.typing, people.history
+
+    async def typing_then_setting(user_id, seconds):
+        people.typing = real_typing
+        await m.command("chat_mode", "first:off")  # the rest goes to the queue as the owner's text
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_setting
+    await m.answer_card(card, "мой текст")
+    people.incoming(555, "ау?")
+    m.on_message(555)
+
+    async def failing_once(uid, limit):
+        people.history = real_history
+        raise TransportError("network")
+    people.history = failing_once
+    for _ in range(4):
+        clock.t += 130
+        await m.tick()
+    assert "мой текст" in people.sent_texts(555)

@@ -434,6 +434,10 @@ class ConversationStore:
     def drop_cards(self, user_id: int) -> None:
         self.db.execute("DELETE FROM cards WHERE user_id=?", (user_id,))
 
+    def outbox_owner_text(self, user_id: int) -> bool:
+        row = self.db.execute("SELECT approved FROM outbox WHERE user_id=?", (user_id,)).fetchone()
+        return bool(row and row[0] == 2)
+
     def drop_drafts(self, user_id: int) -> int:
         """Remove the agent's drafts for this chat (not escalations or the owner's own text)."""
         return self.db.execute("DELETE FROM cards WHERE user_id=? AND kind='draft'", (user_id,)).rowcount
@@ -594,6 +598,7 @@ class ConversationManager:
                 self.store.update(ref.user_id, score=score)
             if minor and not known.minor:  # learnt later: nothing prepared before goes out, answer anew
                 self.store.update(ref.user_id, minor=1, score=None)
+                self.store.set(f"minor_at:{ref.user_id}", str(self.clock()))
                 self._bump(ref.user_id)  # a send already being typed is cancelled at its gate
                 if self.store.drop_drafts(ref.user_id):  # written without knowing: not offered any more
                     await self.say(f"[{bot}] {ref.name}: по анкете меньше 18, черновик агента отменён.")
@@ -998,6 +1003,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not new and not first:
             return
         card = self.store.open_card(person.user_id)
+        if self.store.outbox_owner_text(person.user_id):
+            return  # the owner's own text is still waiting to go out: it is not replaced by a draft
         if card is not None and (card["upto"] == upto or card["kind"] == "own"):
             # Already waiting for the owner on this state, or on their own text that failed to send: a new
             # draft must not replace what the owner wrote.
@@ -1024,7 +1031,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                     if fresh is None or fresh.state != "active":
                         return  # the owner took over (or blocked) while the draft was being written
                 draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in draft][:3]
-                await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t])
+                await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
+                                     written_at=now)
                 return
             if category:
                 await self._escalate(person, history, upto, category, ESCALATIONS[category], [])
@@ -1051,13 +1059,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if action == "escalate" or not messages:
             category = str(decision.get("category") or "unclear")
             await self._escalate(person, history, upto, category,
-                                 str(decision.get("reason") or ESCALATIONS.get(category, "")), messages)
+                                 str(decision.get("reason") or ESCALATIONS.get(category, "")), messages, written_at=now)
             return
         risky = next((c for c in (classify_outgoing(t, intimacy=self._intimacy_for(person)) for t in messages)
                       if c), None)
         if risky:
             await self._escalate(person, history, upto, risky,
-                                 f"агент хотел написать то, что решаете вы: {ESCALATIONS.get(risky, risky)}", messages)
+                                 f"агент хотел написать то, что решаете вы: {ESCALATIONS.get(risky, risky)}", messages,
+                                 written_at=now)
             return
         if self.mode == "auto":
             delay = self.rng.uniform(self.cfg.reply_delay_min_s, self.cfg.reply_delay_max_s)
@@ -1065,7 +1074,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.update(person.user_id, handled_upto=upto)
             self.wake.set()
         else:
-            await self._draft(person, history, upto, messages)
+            await self._draft(person, history, upto, messages, written_at=now)
 
     def _over_budget(self, now: float) -> bool:
         return self.cfg.daily_budget_usd > 0 and self.store.spend_today(now) >= self.cfg.daily_budget_usd
@@ -1118,7 +1127,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         tail = history[-n:]
         return "\n".join(f"{'вы' if m.outgoing else person.name}: {m.text or '(медиа)'}" for m in tail)
 
-    async def _draft(self, person: Person, history, upto: int, messages: list[str]) -> None:
+    async def _draft(self, person: Person, history, upto: int, messages: list[str],
+                     written_at: float | None = None) -> None:
+        """`written_at`: when the model wrote the text (the card keeps it, see _answer_card)."""
         # One pending action per chat: a newer draft replaces the old one and any queued message.
         self.store.drop_cards(person.user_id)
         self.store.drop_outbox(person.user_id)
@@ -1127,12 +1138,13 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                               f"\n\nЧерновик:\n{body}\n\nОтветьте «ок», своим текстом (уйдёт как есть), "
                               f"«пропуск» или «сам».")
         if ctrl is not None:
-            self.store.add_card(ctrl, person.user_id, "draft", upto, messages, self.clock())
+            self.store.add_card(ctrl, person.user_id, "draft", upto, messages,
+                                written_at if written_at is not None else self.clock())
         else:  # the draft never reached the owner: try again later
             self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
 
     async def _escalate(self, person: Person, history, upto: int, category: str, reason: str,
-                        messages: list[str]) -> None:
+                        messages: list[str], written_at: float | None = None) -> None:
         # The chat waits for the owner: further messages from the person are not answered meanwhile.
         self.store.drop_cards(person.user_id)
         self.store.drop_outbox(person.user_id)
@@ -1143,7 +1155,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                               + ("«ок» (отправить черновик), " if messages else "")
                               + "«веди» — пусть агент продолжает, «сам» — дальше пишете вы.")
         if ctrl is not None:
-            self.store.add_card(ctrl, person.user_id, "escalation", upto, messages, self.clock())
+            self.store.add_card(ctrl, person.user_id, "escalation", upto, messages,
+                                written_at if written_at is not None else self.clock())
         else:  # the owner never got it: do not leave the chat paused with nobody aware, try again later
             current = self.store.person(person.user_id)
             if current is not None and current.state == "paused":  # unless the owner took it over meanwhile
@@ -1170,7 +1183,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not approved and self.mode != "auto":
             # Queued in auto mode, but the owner switched to approve meanwhile: ask first.
             history = await self.people.history(user_id, self.cfg.history_messages)
-            await self._draft(person, history, upto, messages)
+            await self._draft(person, history, upto, messages, written_at=0.0)  # written earlier, when unknown
             return
         quiet_end = self._quiet_now()
         if quiet_end is not None:
@@ -1345,6 +1358,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self.say(f"Агент продолжает диалог с {person.name}.")
             return
         ok_word = word in ("ок", "ok", "+", "да")
+        minor_at = float(self.store.get(f"minor_at:{person.user_id}") or 0)
+        if (ok_word and card["kind"] in ("draft", "escalation") and card["messages"] and person.minor
+                and card["ts"] < minor_at):
+            # The agent wrote it before it was known that the person is under 18: never sent on «ок».
+            self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
+            await self.say(f"Черновик для {person.name} написан до того, как выяснилось, что собеседнику меньше 18. "
+                           f"Не отправляю: напишите свой текст или «веди».")
+            return
         # A card restored after a failed send of the owner's own text ("own") stays the owner's text.
         owner_text = not ok_word or card["kind"] == "own"
         messages = card["messages"] if ok_word else [text.strip()]
