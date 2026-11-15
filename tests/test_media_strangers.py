@@ -1801,3 +1801,61 @@ async def test_a_scheduled_check_survives_a_temporary_model_error(tmp_path, defe
     await m.tick()
     assert len(m.llm.calls) == calls + 2
     assert people.sent_texts(555)[-1] == "как прошёл день?"
+
+
+# ------------------------------------------------------------------ late evening and night
+def at_moscow(hour, minute=0):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime(2027, 1, 15, hour, minute, tzinfo=ZoneInfo("Europe/Moscow")).timestamp()
+
+
+async def test_a_quiet_chat_written_to_late_is_answered_in_the_morning(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    await match(m)
+    clock.t = at_moscow(0, 10)
+    people.chats[555] = [ChatMessage(1, False, "привет, не спишь?", clock.t)]
+    m.on_message(555)
+    clock.t += 11
+    await m.tick()
+    assert m.llm.calls == [] and m.store.person(555).due_at >= at_moscow(9) + 60
+    clock.t = at_moscow(9, 40)
+    m.llm.reply = {"action": "reply", "messages": ["сорри, уснул) привет"]}
+    for _ in range(3):
+        await m.tick()
+        clock.t += 60
+    assert people.sent_texts(555) == ["сорри, уснул) привет"]
+
+
+async def test_a_lively_chat_late_in_the_evening_goes_on(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    await match(m)
+    clock.t = at_moscow(0, 10)
+    people.chats[555] = [ChatMessage(1, False, "ахах", clock.t - 300), ChatMessage(2, True, "ну да", clock.t - 200),
+                         ChatMessage(3, False, "а ты завтра рано встаёшь?", clock.t)]
+    m.store.record_sent(555, 2, clock.t - 200)  # "ну да" was the agent's
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["да, пары с утра, скоро спать"]}
+    clock.t += 11
+    await m.tick()
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555)[-1] == "да, пары с утра, скоро спать"
+    assert "say good night" in m.llm.calls[-1][0]["content"]
+
+
+async def test_no_follow_up_at_night(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, timezone="Europe/Moscow",
+                                   late_hours="23:30-01:30", quiet_hours="01:30-09:00")
+    await match(m)
+    clock.t = at_moscow(3)
+    people.chats[555] = [ChatMessage(1, False, "привет", clock.t - 86400),
+                         ChatMessage(2, True, "привет)", clock.t - 80000)]
+    m.store.record_sent(555, 2, clock.t - 80000)
+    m.store.update(555, handled_upto=1)
+    m.store.set("follow_up:555", str(clock.t - 1))
+    m.store.update(555, due_at=clock.t)
+    await m.tick()
+    assert m.llm.calls == [] and float(m.store.get("follow_up:555")) >= at_moscow(9)

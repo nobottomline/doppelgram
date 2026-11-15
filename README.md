@@ -219,8 +219,12 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   topic instead of chasing dry answers. Now and then it ends a lively chat on a high note with a real reason
   ("побежал на тренировку, вечером напишу") and keeps the promise.
 - **Pace.** About as fast as the person answers: seconds in a lively chat, longer in a slow one, sometimes a
-  long pause, never in quiet hours. A turn may be a few short messages in a row. It quotes one of their
+  long pause. A turn may be a few short messages in a row. It quotes one of their
   messages only to answer something specific after the chat moved on.
+- **Night.** Late in the evening (`late_hours`, 23:30–01:30) it answers only a chat that is lively right now and
+  may say good night itself ("ладно, я спать, завтра напишу"); a quiet chat written to late is answered in the
+  morning. During `quiet_hours` (01:30–09:00) nothing is sent; night messages get a morning answer, sometimes
+  with a short "сорри, уснул".
 - **Read receipts.** Their messages are marked read only when an answer is about to go out, a few seconds
   before typing (a network failure right after can leave them read without an answer).
 - **Late answers.** Answering hours later, it may open with a short reason from your life ("сорри, пары

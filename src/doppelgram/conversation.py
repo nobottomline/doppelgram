@@ -260,6 +260,7 @@ How to talk:
 - Light humour and playful teasing are fine when the tone allows. No pressure, no neediness, no long monologues.
 - Do not stay on one small topic for more than two turns. If their recent replies are short and they ask nothing back (see "## Now"), do not ask another question on the same topic: share something of the owner's or switch to a new, lighter topic. If they stay dry after that, choose "wait" instead of chasing. Never send several messages in a row without an answer from them.
 - Timing: the owner is a busy person, not always online. If you answer long after their message (several hours or days), you may open with a short natural reason that fits the owner's life ("сорри, пары были", "только с тренировки"), not every time and never a long story. If they ask why you took long, answer the same way, from the owner's facts and schedule. If they took long themselves, do not complain about it.
+- Night: late in the evening keep it short, and when the chat winds down say good night naturally ("ладно, я спать, завтра напишу") with "next_check_h" set for the morning. Answering in the morning what they wrote at night, a short "сорри, уснул" fits sometimes, not always.
 - First message (empty chat): one or two short messages that open with something specific from their profile and an easy question. Never just "привет, как дела", never a compliment on looks.
 
 How people get interested (use it naturally, never mechanically):
@@ -951,10 +952,27 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
 
     def _quiet_now(self) -> float | None:
         """If now is within quiet hours, the timestamp when they end."""
-        if not self.cfg.quiet_hours:
+        return self._window_end(self.cfg.quiet_hours, self.clock())
+
+    def _late_until(self) -> float | None:
+        """In the late evening: when the agent may next answer a quiet chat (the end of the night)."""
+        end = self._window_end(self.cfg.late_hours, self.clock())
+        if end is None:
             return None
-        now = datetime.fromtimestamp(self.clock(), ZoneInfo(self.cfg.timezone))
-        start_s, end_s = self.cfg.quiet_hours.split("-")
+        return self._window_end(self.cfg.quiet_hours, end) or end  # the night usually follows the evening
+
+    @staticmethod
+    def _lively(history: list[ChatMessage], now: float, minutes: float) -> bool:
+        """The chat is going on right now: the person wrote within `minutes` and the owner within the hour."""
+        theirs = [m.date for m in history if not m.outgoing and m.date]
+        ours = [m.date for m in history if m.outgoing and m.date]
+        return bool(theirs and ours and now - theirs[-1] <= minutes * 60 and now - ours[-1] <= 3600)
+
+    def _window_end(self, window: str, ts: float) -> float | None:
+        if not window:
+            return None
+        now = datetime.fromtimestamp(ts, ZoneInfo(self.cfg.timezone))
+        start_s, end_s = window.split("-")
         start = int(start_s[:-3]) * 60 + int(start_s[-2:])
         end = int(end_s[:-3]) * 60 + int(end_s[-2:])
         minute = now.hour * 60 + now.minute
@@ -1121,6 +1139,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if first and self.store.first_messages_since(now - 86400) >= self.first_messages_cap:
             self.store.update(person.user_id, due_at=now + 3600)
             return
+        late_until = self._late_until()
+        if (late_until is not None and new and self.mode == "auto"
+                and not self._lively(history, now, self.cfg.late_lively_min)):
+            # Late evening and the chat is not going on right now: a busy person answers in the morning.
+            self.store.update(person.user_id, due_at=late_until + self.rng.uniform(60, 1800))
+            return
         history, images = await self._understand(person, history, {m.id for m in new})
         new = [m for m in history if not m.outgoing and m.id > person.handled_upto]
         for m in new:
@@ -1230,6 +1254,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         """The person has not answered for a while: one light message to reopen the chat, or let it be."""
         due = self.store.get(f"follow_up:{person.user_id}")
         if not self.cfg.follow_ups or due is None or float(due) > now:
+            return
+        night = self._late_until() or self._quiet_now()
+        if night is not None:  # nobody reopens a quiet chat at night: come back in the morning
+            self.store.set(f"follow_up:{person.user_id}", str(night + self.rng.uniform(600, 3600)))
             return
         incoming = [m for m in history if not m.outgoing]
         latest = incoming[-1].id if incoming else 0

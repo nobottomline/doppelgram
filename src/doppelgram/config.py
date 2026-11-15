@@ -171,7 +171,11 @@ class ConversationConfig:
     follow_up_max_h: float = 60.0
     read_receipts: bool = True  # their messages are marked as read when the agent answers (not before)
     backlog_days: int = 30  # at start: unanswered chats people started in the last N days are triaged (0: off)
-    quiet_hours: str = ""  # "01:00-09:00" in `timezone`: no messages are sent then
+    quiet_hours: str = ""  # "01:30-09:00" in `timezone`: asleep, no messages are sent then
+    # Late evening ("23:30-01:30"): the agent answers only a chat that is lively right now (the person wrote within
+    # late_lively_min minutes and the owner within the last hour); a quiet chat is answered in the morning.
+    late_hours: str = ""
+    late_lively_min: float = 15.0
     timezone: str = "UTC"
     lowercase: bool = True
     history_messages: int = 30
@@ -317,8 +321,10 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
     cfg = ConversationConfig(**values)
     if cfg.mode not in ("approve", "auto"):
         raise ConfigError("conversations.mode must be 'approve' or 'auto'")
-    if cfg.quiet_hours and not re.fullmatch(r"\d{1,2}:\d{2}-\d{1,2}:\d{2}", cfg.quiet_hours):
-        raise ConfigError("conversations.quiet_hours must look like '01:00-09:00'")
+    for name in ("quiet_hours", "late_hours"):
+        value = getattr(cfg, name)
+        if value and not re.fullmatch(r"\d{1,2}:\d{2}-\d{1,2}:\d{2}", value):
+            raise ConfigError(f"conversations.{name} must look like '01:00-09:00'")
     if cfg.strangers not in ("ask", "lead", "ignore"):
         raise ConfigError("conversations.strangers must be 'ask', 'lead' or 'ignore'")
     if not 1 <= cfg.write_first_min_score <= 10:
