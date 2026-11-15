@@ -1710,3 +1710,26 @@ async def test_the_score_survives_an_owner_confirmation(tmp_path):
                                    links=("https://t.me/anya_example",)))
     await agent.step_safely()
     assert leo.sent == ["❤️"] and got and got[0][-1] == 9
+
+
+async def test_a_taste_check_offers_only_the_rating_buttons(tmp_path):
+    bib = FakeBibinto(people=["Аня"])
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("бибинто", bib, sure)], mode="auto",
+                                  spot_check_rate=1.0, spot_checks_per_hour=5)
+    await steps(agents, 2)
+    check = next(m for m in inbox.messages if "Проверка вкуса" in m)
+    assert "Варианты: 1 · 2 · 3 · 4 · 5 · 6 · 7 · 8 · 9 · 10" in check
+    assert "Назад" not in check and "11" not in check
+
+
+def test_leomatch_options_are_like_and_dislike_only(tmp_path):
+    from doppelgram.models import BotMessage
+    sup, agents, inbox, *_ = make(tmp_path, bots=[("дайвинчик", FakeLeomatch(), sure)], mode="supervised")
+    msg = BotMessage(id=1, text="Аня, 22", media_kind="photo", media_key="p",
+                     buttons=reply_kb([["❤️", "💌 / 📹", "👎", "💤"]]))
+    choices, labels, listing = agents["дайвинчик"]._options(msg)
+    assert labels == ["❤️", "👎"] and str(listing) == "1 ❤️ · 2 👎"
+    menu = BotMessage(id=2, text="Меню", buttons=reply_kb([["1", "2", "3"], ["Назад"]]))
+    assert agents["дайвинчик"]._options(menu)[1] == ["1", "2", "3"]
+    other = BotMessage(id=3, text="?", buttons=reply_kb([["Да", "Нет"]]))
+    assert agents["дайвинчик"]._options(other)[1] == ["Да", "Нет"]  # no ratings: everything is offered

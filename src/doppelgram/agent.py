@@ -182,6 +182,9 @@ def observe(msgs: list[BotMessage], deny: tuple[str, ...] = (), decline: tuple[s
     return Observation(msgs, view, image_msg, rev, keyboard_msg.id if keyboard_msg is not None else None)
 
 
+_REACTIONS = ("❤", "♥", "👍", "👎", "💔")  # like and dislike buttons of a profile
+
+
 class Agent:
     def __init__(self, cfg: Config, transport: Transport, llm: LLMClient, store: Store, *,
                  clock: Callable[[], float] = time.time, sleep=asyncio.sleep,
@@ -1142,9 +1145,18 @@ class Agent:
         return lines
 
     def _options(self, msg: BotMessage) -> tuple[list[str], list[str], Html]:
-        choices = [btn.id for btn in msg.clickable_buttons]
-        labels = [msg.button(c).text for c in choices]
-        listing = Html(" · ".join(f"{n} {esc(t)}" for n, t in enumerate(labels, 1)))
+        """The choices offered to the owner for a profile: only the rating buttons ("1".."10" in Бибинто, ❤️ and
+        👎 in Дайвинчик), not navigation such as «Назад» or 💤; all buttons when none of them look like ratings."""
+        buttons = list(msg.clickable_buttons)
+        digits = [btn for btn in buttons if re.fullmatch(r"\s*\d{1,2}\s*", btn.text)]
+        reactions = [btn for btn in buttons if any(x in btn.text for x in _REACTIONS)]
+        chosen = digits if len(digits) >= 2 else reactions if len(reactions) >= 2 else buttons
+        choices = [btn.id for btn in chosen]
+        labels = [btn.text for btn in chosen]
+        if chosen is digits:  # "1 · 2 · … · 10": the number is the button
+            listing = Html(" · ".join(esc(t.strip()) for t in labels))
+        else:
+            listing = Html(" · ".join(f"{n} {esc(t)}" for n, t in enumerate(labels, 1)))
         return choices, labels, listing
 
     async def _ask_owner_to_confirm(self, obs: Observation, d: Decision, image: bytes | None,
