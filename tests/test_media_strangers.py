@@ -879,3 +879,53 @@ async def test_the_rest_of_a_series_survives_a_command_about_another_chat(tmp_pa
         clock.t += 31
         await m.tick()
     assert people.sent_texts(555) == ["привет)", "как день прошёл?"]
+
+
+async def test_an_approved_series_survives_a_command_about_another_chat(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет)", "давай в субботу на кг?"]}
+    await answered(m, people, clock)
+    card = 9000 + len(inbox)
+    real_send = people.send
+
+    async def send_then_command(user_id, text):
+        people.send = real_send
+        msg_id = await real_send(user_id, text)
+        await m.command("self", 999)
+        return msg_id
+    people.send = send_then_command
+    await m.answer_card(card, "ок")
+    for _ in range(2):
+        clock.t += 31
+        await m.tick()
+    assert people.sent_texts(555) == ["привет)", "давай в субботу на кг?"]
+
+
+async def test_a_restart_while_typing_resumes_the_queued_reply_without_repeats(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет)", "как день?"]}
+    await answered(m, people, clock)  # queued
+    real_send = people.send
+    sends = {"n": 0}
+
+    class Crash(Exception):
+        pass
+
+    async def crash_on_second(user_id, text):
+        sends["n"] += 1
+        if sends["n"] == 2:
+            raise Crash()  # the process dies while typing the second message
+        return await real_send(user_id, text)
+    people.send = crash_on_second
+    clock.t += 31
+    with pytest.raises(Crash):
+        await m._tick()
+    people.send = real_send
+    restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
+    clock.t += 1
+    await restarted.tick()
+    assert people.sent_texts(555) == ["привет)", "как день?"]

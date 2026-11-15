@@ -429,6 +429,13 @@ class ConversationStore:
         return [(r[0], r[1], json.loads(r[2]), bool(r[3])) for r in self.db.execute(
             "SELECT user_id, upto, messages, approved FROM outbox WHERE send_at <= ?", (now,))]
 
+    def trim_outbox(self, user_id: int, remaining: list[str]) -> None:
+        if remaining:
+            self.db.execute("UPDATE outbox SET messages=? WHERE user_id=?",
+                            (json.dumps(remaining, ensure_ascii=False), user_id))
+        else:
+            self.drop_outbox(user_id)
+
     def outbox_is(self, user_id: int, upto: int, messages: list[str]) -> bool:
         """Whether this exact queued message is still there (it may have been dropped or replaced)."""
         row = self.db.execute("SELECT upto, messages FROM outbox WHERE user_id=?", (user_id,)).fetchone()
@@ -483,6 +490,9 @@ class ConversationManager:
         # Bumped by every owner action that changes a chat's state; a send prepared under an older epoch
         # is abandoned at its synchronous pre-send gate.
         self.epoch = 0
+        # Per chat: bumped by owner actions about one person (/self, /lead, a card answer, a minor flag), so
+        # they cancel that chat's prepared sends without touching the others.
+        self._chat_epochs: dict[int, int] = {}
 
     # --- state --------------------------------------------------------------
     @property
@@ -563,7 +573,7 @@ class ConversationManager:
                 self.store.update(ref.user_id, score=score)
             if minor and not known.minor:  # learnt later: nothing prepared before goes out, answer anew
                 self.store.update(ref.user_id, minor=1, score=None)
-                self.epoch += 1  # a send already being typed is cancelled at its gate
+                self._bump(ref.user_id)  # a send already being typed is cancelled at its gate
                 if known.state == "active":
                     self._redecide(ref.user_id)  # cards (drafts, escalations) stay with the owner
         if known is not None:
@@ -592,6 +602,12 @@ class ConversationManager:
         # Otherwise the chat waits: it is looked at when the person writes (on_message).
 
     # --- writing first ------------------------------------------------------------
+    def _epoch_of(self, user_id: int) -> tuple[int, int]:
+        return self.epoch, self._chat_epochs.get(user_id, 0)
+
+    def _bump(self, user_id: int) -> None:
+        self._chat_epochs[user_id] = self._chat_epochs.get(user_id, 0) + 1
+
     def _redecide(self, user_id: int) -> None:
         """Forget what was prepared for this chat and answer the person's latest messages again."""
         self.store.drop_outbox(user_id)
@@ -916,7 +932,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         if self.store.get(f"unchecked:{person.user_id}"):
             # Whether the owner already writes here could not be checked at the match: check before answering.
-            epoch = self.epoch
+            epoch = self._epoch_of(person.user_id)
             try:
                 talking = await self.people.wrote_before(person.user_id)
             except RateLimited as exc:
@@ -927,7 +943,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             except TransportError:
                 self.store.update(person.user_id, due_at=self.clock() + self.RETRY_S)
                 return
-            if epoch != self.epoch or not self.store.get(f"unchecked:{person.user_id}"):
+            if epoch != self._epoch_of(person.user_id) or not self.store.get(f"unchecked:{person.user_id}"):
                 self.wake.set()  # the owner acted meanwhile (/lead, /self...): look again with that
                 self.store.update(person.user_id, due_at=self.clock())
                 return
@@ -1111,13 +1127,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
     async def _send_outbox(self, user_id: int, upto: int, messages: list[str], approved: bool) -> None:
         if not self.store.outbox_is(user_id, upto, messages):
             return  # dropped or replaced since the due list was read (e.g. while another chat was typing)
-        self.store.drop_outbox(user_id)
         person = self.store.person(user_id)
         if person is None or person.state != "active" or self.stopped:
+            self.store.drop_outbox(user_id)
             return
         if not approved and (self.store.get(f"unchecked:{user_id}") or self.store.get(f"redecide:{user_id}")):
             self._redecide(user_id)  # not verified yet, or to be answered anew: decide again first
             return
+        if not approved and self.mode == "auto" and self._quiet_now() is None:
+            await self._deliver_queued(person, upto, messages, approved)
+            return
+        self.store.drop_outbox(user_id)
         if not approved and self.mode != "auto":
             # Queued in auto mode, but the owner switched to approve meanwhile: ask first.
             history = await self.people.history(user_id, self.cfg.history_messages)
@@ -1127,23 +1147,35 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if quiet_end is not None:
             self.store.set_outbox(user_id, upto, messages, quiet_end + self.rng.uniform(60, 1800), approved)
             return
-        result = await self._deliver(person, upto, messages, approved=approved)
+        await self._deliver_queued(person, upto, messages, approved)
+
+    async def _deliver_queued(self, person: Person, upto: int, messages: list[str], approved: bool) -> None:
+        """Deliver a queued series. The outbox row stays until each message is sent (then it is trimmed), so
+        a restart resumes the rest; afterwards the row is set to whatever should still be sent, or removed."""
+        user_id = person.user_id
+        self.store.set_outbox(user_id, upto, messages, self.clock(), approved)  # in case it was dropped above
+        result = await self._deliver(person, upto, messages, approved=approved, from_outbox=True)
+        rest = messages[result.sent:]
         if self.store.get(f"redecide:{user_id}") and not approved:
+            self.store.drop_outbox(user_id)
             return  # the chat is answered anew, not with what was left of these messages
-        if result.status == "capped" and not result.sent:
-            self.store.set_outbox(user_id, upto, messages, self.clock() + 900, approved)
+        if result.status == "capped":
+            self.store.set_outbox(user_id, upto, rest, self.clock() + 900, approved)
         elif result.status == "interrupted":
-            # The owner changed something (mode, takeover, another chat...): the rest is re-checked against
-            # the current settings when it comes up again (a takeover of this chat drops it then).
-            self.store.set_outbox(user_id, upto, messages[result.sent:], self.clock(), approved=False)
+            # The owner changed something (a setting, this chat's state...): the rest is re-checked against
+            # the current state when it comes up again (a takeover of this chat drops it then).
+            self.store.set_outbox(user_id, upto, rest, self.clock(), approved)
             self.wake.set()
         elif result.status == "error":
-            self.store.set_outbox(user_id, upto, messages[result.sent:], self.clock() + 120, approved)
-        elif result.status == "send_failed":
-            await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог.")
+            self.store.set_outbox(user_id, upto, rest, self.clock() + 120, approved)
+        else:
+            self.store.drop_outbox(user_id)
+            if result.status == "send_failed":
+                await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог.")
 
     async def _deliver(self, person: Person, upto: int, messages: list[str], *, approved: bool = False,
-                       owner_text: bool = False, epoch: int | None = None) -> Delivery:
+                       owner_text: bool = False, epoch: tuple[int, int] | None = None,
+                       from_outbox: bool = False) -> Delivery:
         """Send messages one by one.
 
         Before every single send there is an async phase (typing, re-reading the chat) followed by a
@@ -1154,7 +1186,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         `approved`: the owner said "ок" (or wrote the text). `owner_text`: the owner wrote it; it is sent even
         if the chat moved on, but caps and the breaker still apply.
         """
-        epoch = self.epoch if epoch is None else epoch
+        epoch = self._epoch_of(person.user_id) if epoch is None else epoch
         sent = 0
         for i, text in enumerate(messages):
             try:
@@ -1184,12 +1216,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # ---- progress first: whatever happens next, this message is never sent again ----
             sent += 1
             self.store.record_sent(person.user_id, msg_id, self.clock())
+            if from_outbox:  # the queue holds only what is still unsent: a restart resumes, never repeats
+                self.store.trim_outbox(person.user_id, messages[i + 1:])
             self.store.update(person.user_id, handled_upto=latest if owner_text else upto, first_sent=1)
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         return Delivery("sent", sent)
 
-    def _gate(self, user_id: int, upto: int, history: list[ChatMessage], epoch: int, *, approved: bool,
+    def _gate(self, user_id: int, upto: int, history: list[ChatMessage], epoch: tuple[int, int], *, approved: bool,
               owner_text: bool, first_of_batch: bool, text: str | None = None) -> tuple[str, int]:
         """Synchronous pre-send check. Returns (status, latest incoming id)."""
         incoming = [m for m in history if not m.outgoing]
@@ -1202,7 +1236,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # Written before something changed (a minor flag, intimacy switched off): decide again.
             self._redecide(user_id)
             return "declined", latest
-        if epoch != self.epoch:
+        if epoch != self._epoch_of(user_id):
             return "interrupted", latest
         if not approved:
             # Autonomous send: only in auto mode, only in an active chat, never in quiet hours.
@@ -1250,7 +1284,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         # Consuming the card is synchronous, so two answers can never both act on it.
         self.store.drop_cards(person.user_id)
         self.store.drop_outbox(person.user_id)
-        self.epoch += 1  # any automatic send prepared before this answer is void
+        self._bump(person.user_id)  # any automatic send prepared for this chat before this answer is void
         if card["kind"] == "stranger":
             if word in ("игнор", "нет", "пропуск", "ignore", "skip"):
                 self._block(person.user_id)
@@ -1291,7 +1325,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.add_style(text.strip(), self.clock())
         if person.state == "paused":
             self.store.update(person.user_id, state="active")  # the owner answered the escalation
-        epoch = self.epoch  # taken before waiting for the lock: a later "сам" still cancels this send
+        epoch = self._epoch_of(person.user_id)  # taken before the lock: a later "сам" still cancels this
         async with self.lock:
             result = await self._deliver(person, card["upto"], messages, approved=True, owner_text=owner_text,
                                          epoch=epoch)
@@ -1348,8 +1382,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self._flush_breaker()
 
     async def _command(self, name: str, arg) -> None:
-        if name != "dialogs":
-            self.epoch += 1  # state changes void sends that were prepared before them
+        if name in ("lead", "self") and str(arg).isdigit():
+            self._bump(int(arg))  # about one chat: only its prepared sends are void
+        elif name != "dialogs":
+            self.epoch += 1  # settings for all chats: every prepared send is re-checked
         if name == "dialogs":
             people = self.store.people()
             if not people:
