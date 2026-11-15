@@ -485,3 +485,7 @@ async def test_a_hold_sharing_a_line_with_the_draft_does_not_count_its_facts(tmp
         await m.tick()
     assert people.sent_texts(555) == ["гляну и напишу"]
     assert m.store.get("said:555") is None and not any("about-me" in n for n in inbox)
+
+
+def test_name_parts_match_inside_an_underscored_word():
+    assert clean_queries(["ann_lee университет"], ["ann", "lee"]) == []
