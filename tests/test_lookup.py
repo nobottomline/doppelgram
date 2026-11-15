@@ -491,19 +491,22 @@ def test_name_parts_match_inside_an_underscored_word():
     assert clean_queries(["ann_lee университет"], ["ann", "lee"]) == []
 
 
-def test_fact_progress_is_idempotent_and_completes_with_the_last_message(tmp_path):
+def test_facts_count_once_and_their_note_waits_for_the_owner(tmp_path):
     m, people, inbox, clock = make(tmp_path)
     m._pend_facts(555, {"new_facts": ["есть машина"]}, ["а", "б"])
-    assert m._facts_sent(555, "а") == [] and m._facts_sent(555, "а") == []  # a recovered send repeats it
-    assert m._facts_sent(555, "в") == []  # not one of them
-    assert m._facts_sent(555, "б") == ["есть машина"] and m._said(555) == ["есть машина"]
+    m._facts_sent(555, "в")  # not one of them
+    assert m._said(555) == []
+    m._facts_sent(555, "а")
+    m._facts_sent(555, "а")  # a recovered send repeats it
+    m._facts_sent(555, "б")
+    assert m._said(555) == ["есть машина"] and m._facts_note(555) == ["есть машина"]
 
 
-async def test_a_crash_right_after_a_send_keeps_its_fact_progress(tmp_path):
+async def test_a_crash_right_after_a_send_keeps_the_fact_and_reports_it_after_restart(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "а ты на чём ездишь?")
-    m.llm.reply = {"action": "reply", "messages": ["у меня", "своя машина"], "new_facts": ["есть машина"]}
+    m.llm.reply = {"action": "reply", "messages": ["у меня своя машина"], "new_facts": ["есть машина"]}
     await answered(m, people, clock)
     real = m.store.commit_send
 
@@ -514,9 +517,26 @@ async def test_a_crash_right_after_a_send_keeps_its_fact_progress(tmp_path):
     with pytest.raises(RuntimeError):
         await m.tick()
     m.store.commit_send = real
-    assert people.sent_texts(555) == ["у меня"]
-    assert json.loads(m.store.get("facts:555"))["sent"] == ["у меня"]
+    assert people.sent_texts(555) == ["у меня своя машина"] and m._said(555) == ["есть машина"]
+    assert not any("about-me" in n for n in inbox)
+    await m.startup()  # the restart delivers the note it never sent
+    assert any("есть машина" in n and "about-me" in n for n in inbox) and m._facts_note(555) == []
 
+
+async def test_a_note_that_could_not_be_sent_is_kept(tmp_path):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    m.store.set("facts_note:555", '["есть машина"]')
+    real = m.say
+
+    async def down(text, image=None):
+        return None
+    m.say = down
+    await m._report_facts(m.store.person(555))
+    assert m._facts_note(555) == ["есть машина"]
+    m.say = real
+    await m._report_facts(m.store.person(555))
+    assert m._facts_note(555) == [] and "есть машина" in inbox[-1]
 
 
 def test_a_crash_while_keeping_facts_never_loses_them(tmp_path):
@@ -530,5 +550,37 @@ def test_a_crash_while_keeping_facts_never_loses_them(tmp_path):
     with pytest.raises(RuntimeError):
         m._facts_sent(555, "а")
     m.store.unset = real
-    assert m._said(555) == ["есть машина"]
-    assert m._facts_sent(555, "а") == [] and m.store.get("facts:555") is None  # the retry finishes, no duplicate
+    assert m._said(555) == ["есть машина"] and m._facts_note(555) == ["есть машина"]
+    m._facts_sent(555, "а")  # the retry finishes without a duplicate
+    assert m._said(555) == ["есть машина"] and m._facts_note(555) == ["есть машина"]
+    assert m.store.get("facts:555") is None
+
+
+def test_declined_short_names_never_reach_a_search():
+    assert clean_queries(["подарок для Ани", "с Аней в кино", "Яну написать", "лист бумаги", "анализ рынка"],
+                         ["Аня", "Ян", "Ли"]) == ["лист бумаги", "анализ рынка"]
+
+
+def test_a_search_never_falls_back_to_another_model():
+    cfg = LLMConfig(base_url="https://openrouter.ai/api/v1", api_key="k", model="m", fallback_models=["x", "y"])
+    assert WebLookup(cfg).client.cfg.fallback_models == []
+
+
+async def test_a_series_cut_after_its_first_message_still_counts_its_facts(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "а ты на чём ездишь?")
+    m.llm.reply = {"action": "reply", "messages": ["у меня своя машина", "а ты?"], "new_facts": ["есть машина"]}
+    await answered(m, people, clock)
+    real = m.people.send
+
+    async def send_then_answer(user_id, text, reply_to=None):
+        msg_id = await real(user_id, text, reply_to)
+        people.incoming(555, "о, круто")  # they answer before the second message
+        return msg_id
+    m.people.send = send_then_answer
+    clock.t += 31
+    await m.tick()
+    m.people.send = real
+    assert people.sent_texts(555) == ["у меня своя машина"]
+    assert m._said(555) == ["есть машина"] and any("есть машина" in n for n in inbox if "about-me" in n)

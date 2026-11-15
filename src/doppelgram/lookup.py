@@ -41,6 +41,12 @@ class SearchError(RuntimeError):
         self.failures = failures or []
 
 
+def _short_name_in(name: str, words: set[str]) -> bool:
+    stem = name[:-1] if len(name) == 3 and name[-1] in "аяоеиыуюэ" else name
+    longest = len(name) + (2 if len(name) == 3 else 1)  # "Ани", "Аней"; "Яна", "Яну" (not "лист" for "Ли")
+    return any(w.startswith(stem) and len(w) <= longest for w in words)
+
+
 def clean_queries(raw, private_words: list[str], limit: int = 2) -> list[str]:
     """The model's search queries, safe to send: short, no contacts, no names of the people in the chat."""
     if isinstance(raw, str):
@@ -56,9 +62,9 @@ def clean_queries(raw, private_words: list[str], limit: int = 2) -> list[str]:
         low = q.lower()
         digits = sum(c.isdigit() for c in q)  # a phone number written with spaces
         words = set(re.findall(r"[^\W_]+", low))  # "ann_lee" is the words "ann" and "lee"
-        # A short name ("Ян", "Ли") only as a whole word; a longer one by its stem, so declensions count too
-        # ("Маша" -> "Машей"). A dropped query costs little: the agent asks the person instead.
-        named = any((w in words) if len(w) < 4 else (w[:-1] in low) for w in private)
+        # A longer name by its stem, so declensions count ("Маша" -> "Машей"); a short one ("Аня", "Ян") as a
+        # word or its short declined forms ("Ани", "Аней", "Яну"). A dropped query costs little: the agent asks.
+        named = any(_short_name_in(w, words) if len(w) < 4 else (w[:-1] in low) for w in private)
         if len(q) < 2 or digits >= 7 or _PRIVATE_RE.search(q) or named or low in (o.lower() for o in out):
             continue
         out.append(q)
@@ -74,7 +80,8 @@ class WebLookup:
         extra = dict(llm_cfg.extra_body)
         extra["plugins"] = [{"id": "web", "engine": "exa", "max_results": max(1, min(int(results), 10))}]
         extra.setdefault("reasoning", {"enabled": False})  # a short factual summary needs no thinking
-        cfg = replace(llm_cfg, model=model or llm_cfg.model, fallback_models=[] if model else llm_cfg.fallback_models,
+        # One attempt per search: a fallback model would repeat the paid web search outside the daily cap.
+        cfg = replace(llm_cfg, model=model or llm_cfg.model, fallback_models=[],
                       max_tokens=600, temperature=0.0, json_mode=True, extra_body=extra)
         self.available = "openrouter.ai" in llm_cfg.base_url  # the web plugin is OpenRouter's
         self.client = client or LLMClient(cfg)

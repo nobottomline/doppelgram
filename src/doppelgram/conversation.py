@@ -962,6 +962,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not self.enabled or self.stopped:
             return
         now = self.clock()
+        for key, _ in self.store.kv_prefix("facts_note:"):  # notes a restart cut off before they reached the owner
+            noted = self.store.person(int(key.split(":", 1)[1]))
+            if noted is not None:
+                await self._report_facts(noted)
         for p in self.store.people():
             if p.state == "paused" and self.store.open_card(p.user_id) is None:
                 # The owner's card never got out (a restart while it was being sent): decide that chat anew.
@@ -1653,49 +1657,52 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return [str(f) for f in value if isinstance(f, str)] if isinstance(value, list) else []
 
     def _pend_facts(self, user_id: int, decision: dict, messages: list[str]) -> None:
-        """What these messages say about the owner beyond about-me. It counts as said only once all of them have
-        actually gone out (see _facts_sent): a skipped draft, a dropped reply or a holding reply that happens to
-        share a line with the draft leaves nothing behind."""
+        """What these messages say about the owner beyond about-me. They count as said once one of them actually
+        goes out (see _facts_sent); every new decision replaces them, so a skipped draft leaves nothing behind."""
         raw = decision.get("new_facts")
         facts = [scrub_text(" ".join(f.split()), 200) for f in raw if isinstance(f, str) and f.strip()][:3] \
             if isinstance(raw, list) else []
         if facts and messages:
-            self.store.set(f"facts:{user_id}", json.dumps({"texts": messages, "facts": facts, "sent": []},
-                                                          ensure_ascii=False))
+            self.store.set(f"facts:{user_id}", json.dumps({"texts": messages, "facts": facts}, ensure_ascii=False))
         else:
             self.store.unset(f"facts:{user_id}")
 
-    def _facts_sent(self, user_id: int, text: str) -> list[str]:
-        """A message went out (synchronous, idempotent: called right after the send, before it is recorded, so
-        a crash in between is repaired by the lost-send recovery calling it again). Once all messages of the
-        pending decision are out, its facts are kept for consistency; returns the ones the owner should hear of."""
+    def _facts_sent(self, user_id: int, text: str) -> None:
+        """One of the pending decision's messages went out: its facts are kept for consistency, and a note for
+        the owner waits until it is delivered (_report_facts). Synchronous and idempotent: it runs right after
+        the send, before the send is recorded, and the lost-send recovery runs it again after a crash."""
         try:
             pending = json.loads(self.store.get(f"facts:{user_id}") or "{}")
         except ValueError:
             pending = {}
         texts = pending.get("texts") if isinstance(pending, dict) else None
         if not isinstance(texts, list) or text not in texts:
-            return []
-        sent = [t for t in pending.get("sent") or [] if isinstance(t, str)]
-        if text not in sent:
-            sent.append(text)
-        if not set(texts) <= set(sent):  # the rest of these messages has not gone out yet
-            self.store.set(f"facts:{user_id}", json.dumps({**pending, "sent": sent}, ensure_ascii=False))
-            return []
+            return
         said = self._said(user_id)
         added = [f for f in pending.get("facts") or [] if isinstance(f, str) and f not in said]
-        if added:  # kept first, the pending entry dropped after: a crash in between repeats this, never loses it
+        if added:  # all of it is written before the pending entry goes: a crash in between repeats, never loses
             self.store.set(f"said:{user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
+            self.store.set(f"facts_note:{user_id}", json.dumps(self._facts_note(user_id) + added, ensure_ascii=False))
         self.store.unset(f"facts:{user_id}")
-        return added
 
-    async def _report_facts(self, person: Person, added: list[str]) -> None:
+    def _facts_note(self, user_id: int) -> list[str]:
+        try:
+            value = json.loads(self.store.get(f"facts_note:{user_id}") or "[]")
+        except ValueError:
+            return []
+        return [f for f in value if isinstance(f, str)] if isinstance(value, list) else []
+
+    async def _report_facts(self, person: Person) -> None:
+        """Tell the owner what the agent said about them beyond about-me (kept until the note gets through)."""
+        added = self._facts_note(person.user_id)
         if not added:
             return
-        await self.say(f"ℹ️ {person.name}: агент сказал о вас то, чего нет в about-me: "
-                       + "; ".join(f"«{f}»" for f in added)
-                       + ". Если это неправда, допишите about-me.md или заберите диалог: /self "
-                       + str(person.user_id))
+        ctrl = await self.say(f"ℹ️ {person.name}: агент сказал о вас то, чего нет в about-me: "
+                              + "; ".join(f"«{f}»" for f in added)
+                              + ". Если это неправда, допишите about-me.md или заберите диалог: /self "
+                              + str(person.user_id))
+        if ctrl is not None:
+            self.store.unset(f"facts_note:{person.user_id}")
 
     def _context(self, person: Person, history: list[ChatMessage], n: int = 4) -> str:
         tail = history[-n:]
@@ -1839,6 +1846,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if the chat moved on, but caps and the breaker still apply.
         """
         epoch = self._epoch_of(person.user_id) if epoch is None else epoch
+        # A holding reply ("гляну и напишу") says nothing about the owner, even if a draft shares its words.
+        counts_facts = not owner_text and not (from_outbox and self._hold_queued(person.user_id))
         sent = 0
         for i, text in enumerate(messages):
             if i == 0 and self.cfg.read_receipts and upto and self._can_send_now(person.user_id, epoch, approved):
@@ -1869,9 +1878,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 sent += 1
                 if i == 0:
                     self.store.unset(f"reply_to:{person.user_id}")
-                added = [] if owner_text else self._facts_sent(person.user_id, text)
+                if counts_facts:
+                    self._facts_sent(person.user_id, text)
                 self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:], messages[i:])
-                await self._report_facts(person, added)
+                await self._report_facts(person)
                 continue
             # ---- synchronous gate: nothing below may await before people.send() ----
             status, latest = self._gate(person.user_id, upto, history, epoch, approved=approved,
@@ -1900,14 +1910,15 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 self.store.unset(f"sending:{person.user_id}")
                 return Delivery("send_failed", sent)
             # ---- progress first: whatever happens next, this message is never sent again ----
-            added = [] if owner_text else self._facts_sent(person.user_id, text)
+            if counts_facts:
+                self._facts_sent(person.user_id, text)
             sent += 1
             if i == 0:
                 self.store.unset(f"reply_to:{person.user_id}")
             # The queue holds only what is still unsent: a restart resumes, never repeats.
             self.store.commit_send(person.user_id, msg_id, self.clock(), latest if owner_text else upto,
                                    messages[i + 1:] if from_outbox else None, messages[i:] if from_outbox else None)
-            await self._report_facts(person, added)
+            await self._report_facts(person)
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         after = self.store.get(f"follow_up_after:{person.user_id}")
