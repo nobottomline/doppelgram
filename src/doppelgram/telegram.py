@@ -137,6 +137,39 @@ def classify_media(msg) -> tuple[str | None, str]:
     return "other", name
 
 
+def chat_media(msg) -> tuple[str | None, str, float]:
+    """(kind, sticker emoji, duration) of a message in a private chat with a person.
+
+    Kinds: photo, image, sticker, gif, video, video_note, voice, audio, other; None for plain text.
+    """
+    media = getattr(msg, "media", None)
+    if media is None or type(media).__name__ == "MessageMediaWebPage":
+        return None, "", 0.0
+    if type(media).__name__ == "MessageMediaPhoto":
+        return ("photo" if getattr(media, "photo", None) is not None else "other"), "", 0.0
+    doc = getattr(media, "document", None)
+    if doc is None:
+        return "other", "", 0.0
+    attrs = {type(a).__name__: a for a in getattr(doc, "attributes", []) or []}
+    mime = getattr(doc, "mime_type", "") or ""
+    if "DocumentAttributeSticker" in attrs:
+        return "sticker", getattr(attrs["DocumentAttributeSticker"], "alt", "") or "", 0.0
+    if "DocumentAttributeAudio" in attrs:
+        audio = attrs["DocumentAttributeAudio"]
+        return ("voice" if getattr(audio, "voice", False) else "audio"), "", float(audio.duration or 0)
+    if "DocumentAttributeVideo" in attrs:
+        video = attrs["DocumentAttributeVideo"]
+        if getattr(video, "round_message", False):
+            return "video_note", "", float(video.duration or 0)
+        kind = "gif" if "DocumentAttributeAnimated" in attrs else "video"
+        return kind, "", float(video.duration or 0)
+    if "DocumentAttributeAnimated" in attrs:
+        return "gif", "", 0.0
+    if mime.startswith("image/"):
+        return "image", "", 0.0
+    return "other", "", 0.0
+
+
 def extract_links(msg) -> tuple[tuple[str, ...], tuple[int, ...]]:
     """URLs, t.me links and @mentions from message entities (offsets are UTF-16 based)."""
     text = msg.message or ""
@@ -275,12 +308,25 @@ class TelegramAccount:
             self._spawn(self._deliver(event, from_saved_messages=False))
 
     async def _on_person(self, event) -> None:
-        """Private messages from matched people (the conversation manager decides who is allowed)."""
+        """Private messages from people: matches go to the conversation manager; a first message from someone
+        unknown goes there as a possible stranger, unless it is a contact, a bot or a service account."""
         conv = getattr(self.router, "conversations", None) if self.router else None
         sender = event.sender_id
         if conv is None or sender in self.cfg.owner_ids or sender in self.channels or sender == self.me.id:
             return
-        conv.on_message(sender)
+        if conv.knows(sender):
+            conv.on_message(sender)
+            return
+        try:
+            user = await event.get_sender()
+        except Exception:  # the entity may be unavailable; it will be seen again on the next message
+            return
+        if not is_stranger_candidate(user):
+            return
+        from .conversation import PersonRef
+
+        name = " ".join(filter(None, [user.first_name, getattr(user, "last_name", None)])) or "без имени"
+        await conv.on_stranger(PersonRef(user.id, getattr(user, "username", None), name))
 
     async def _on_saved(self, event) -> None:
         if not event.is_private or event.chat_id != self.me.id:
@@ -396,6 +442,15 @@ _USERNAME_RE = re.compile(r"(?:https?://)?(?:t\.me|telegram\.me)/([A-Za-z]\w{3,3
 _TG_USER_RE = re.compile(r"tg://user\?id=(\d+)")
 
 
+def is_stranger_candidate(user) -> bool:
+    """A real person the owner has no relation with: not a contact, not a bot, not a service, deleted, scam
+    or fake account. Whether there was an earlier chat is checked by the conversation manager."""
+    if user is None or type(user).__name__ != "User":
+        return False
+    return not any(getattr(user, flag, False) for flag in
+                   ("bot", "contact", "mutual_contact", "deleted", "support", "scam", "fake", "is_self"))
+
+
 class PeopleChannel:
     """Direct chats with matched people. Only users that are real people (not bots, not the owner)."""
 
@@ -437,9 +492,31 @@ class PeopleChannel:
         msgs = await _call(self.client.get_messages(user_id, limit=limit))
         out = []
         for m in reversed(list(msgs)):
-            kind, _ = classify_media(m)
-            out.append(ChatMessage(m.id, bool(m.out), m.message or "", m.date.timestamp() if m.date else 0.0, kind))
+            kind, emoji, duration = chat_media(m)
+            out.append(ChatMessage(m.id, bool(m.out), m.message or "", m.date.timestamp() if m.date else 0.0,
+                                   kind, emoji, duration))
         return out
+
+    MAX_DOWNLOAD = 20 * 1024 * 1024
+
+    async def download(self, user_id: int, msg_id: int, *, thumb: bool = False) -> bytes | None:
+        msg = await _call(self.client.get_messages(user_id, ids=msg_id))
+        if msg is None or getattr(msg, "media", None) is None:
+            return None
+        doc = getattr(msg.media, "document", None)
+        if thumb:
+            if doc is not None and not (getattr(doc, "thumbs", None) or getattr(doc, "video_thumbs", None)):
+                return None
+            data = await _call(self.client.download_media(msg, file=bytes, thumb=-1))
+        else:
+            if doc is not None and (getattr(doc, "size", 0) or 0) > self.MAX_DOWNLOAD:
+                return None
+            data = await _call(self.client.download_media(msg, file=bytes))
+        return data if isinstance(data, bytes) else None
+
+    async def profile(self, user_id: int) -> str:
+        full = await _call(self.client(functions.users.GetFullUserRequest(user_id)))
+        return getattr(getattr(full, "full_user", None), "about", None) or ""
 
     async def send(self, user_id: int, text: str) -> int:
         sent = await _call(self.client.send_message(user_id, text, parse_mode=None))

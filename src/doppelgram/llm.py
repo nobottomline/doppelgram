@@ -105,6 +105,7 @@ def _content_text(content) -> str:
 
 # Parameters a provider may reject with HTTP 400/422, and how to adapt: drop it or rename it.
 _ADAPTABLE = (
+    ("reasoning", None),  # a model that cannot switch thinking off: send it without the hint
     ("response_format", None),
     ("max_tokens", "max_completion_tokens"),
     ("temperature", None),

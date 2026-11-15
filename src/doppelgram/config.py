@@ -141,9 +141,20 @@ class ConversationConfig:
     mode: str = "approve"  # approve | auto
     # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
     # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
-    # Intimate topics (adults only, opt-in): flirting, talking about sex, agreeing on an intimate meeting when
-    # the person clearly wants it. Off: such topics go to the owner. Graphic sexting and minors always do.
-    intimacy: bool = False
+    # Intimate topics (adults only): flirting, talking about sex, agreeing on an intimate meeting when the
+    # person clearly wants it. Off: such topics go to the owner. Graphic sexting and minors always do.
+    intimacy: bool = True
+    # People who write first without a match notice (e.g. Бибинто shares the username after mutual ratings):
+    # "ask" — a card to the owner, who answers «веди» or «игнор»; "lead" — the agent takes up acquaintances
+    # by itself and asks the owner about the rest; "ignore". Contacts, bots and existing chats are never touched.
+    strangers: str = "ask"
+    # What the person sends besides text: pictures are shown to the model; stickers are read as their emoji;
+    # voice messages and video notes are transcribed with speech_model on the [llm] endpoint (OpenRouter).
+    see_photos: bool = True
+    speech: bool = True
+    speech_model: str = "google/gemini-3.8-flash"
+    speech_fallback_models: list[str] = field(default_factory=lambda: ["google/gemini-2.5-flash"])
+    speech_max_seconds: float = 180.0
     write_first: bool = False
     write_first_min_score: int = 9
     first_messages_per_day: int = 3
@@ -299,6 +310,8 @@ def _conversations(base: Path, table: dict) -> ConversationConfig:
         raise ConfigError("conversations.mode must be 'approve' or 'auto'")
     if cfg.quiet_hours and not re.fullmatch(r"\d{1,2}:\d{2}-\d{1,2}:\d{2}", cfg.quiet_hours):
         raise ConfigError("conversations.quiet_hours must look like '01:00-09:00'")
+    if cfg.strangers not in ("ask", "lead", "ignore"):
+        raise ConfigError("conversations.strangers must be 'ask', 'lead' or 'ignore'")
     if not 1 <= cfg.write_first_min_score <= 10:
         raise ConfigError("conversations.write_first_min_score must be 1-10")
     if cfg.write_first and cfg.first_messages_per_day < 1:

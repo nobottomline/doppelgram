@@ -138,9 +138,24 @@ you send it with «ок».
 
 **Money, contacts, calls, intimacy.** The agent declines money requests itself and shares no contacts or
 links (a phone number is not needed in Telegram); a call proposal comes to you as a draft, like a meeting.
-Intimate topics go to you unless you are an adult and switch on `intimacy` (`/chat интим вкл`): then the
-agent may flirt and talk about it when the person clearly wants it too, never pressures, never asks for
-photos, and hands graphic sexting to you. Any sign that the person is under 18 always goes to you.
+With `intimacy` on (the default, for adult owners; `/chat интим выкл`) the agent may flirt and talk about
+intimate topics when the person clearly wants it too, never pressures, never asks for photos, and hands
+graphic sexting to you; off, such topics come to you. Any sign that the person is under 18 always goes to you.
+
+**Stickers, photos, voice.** Stickers are read as their emoji. Photos, and a frame of gifs, videos and
+video notes, are shown to the model (`see_photos`). Voice messages and video notes are transcribed with an
+audio model on your OpenRouter key (`speech_model`, default `google/gemini-3.8-flash`, about $0.002 a
+minute; OpenRouter needs at least $0.50 on the key for audio requests). Longer ones than
+`speech_max_seconds`, files and anything the agent cannot hear or see come to you. Pictures and transcripts
+are never stored.
+
+**People who write first.** Someone may write to you without a match notice (Бибинто shares your username
+after mutual ratings). Contacts, bots, service, scam and fake accounts and anyone you have chatted with
+before are never touched, and obvious spam is dropped. Others go by `strangers`: `ask` (default) sends
+you a card with their first messages and bio, and you answer «веди», «игнор» or with your own text;
+`lead` lets the agent take up acquaintances itself (a short model check) and asks you about everyone else;
+`ignore`. Switch it with `/chat незнакомые спрашивать | вести | игнор`. There is no limit on chats the
+person started; only writing first is capped.
 
 **Try it offline first.** `doppelgram -c config.toml test-chat` lets the real agent (your files, prompt and
 guards) talk to a model playing a match, without Telegram. Options: `--card` (their profile), `--persona`

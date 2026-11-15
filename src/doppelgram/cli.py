@@ -168,9 +168,14 @@ async def cmd_run(cfg, args) -> int:
 
         conversations = None
         if cfg.conversations is not None:
-            conversations = ConversationManager(cfg.conversations, llm, PeopleChannel(account),
+            from .speech import Transcriber
+
+            conv_cfg = cfg.conversations
+            transcriber = (Transcriber(cfg.llm, conv_cfg.speech_model, conv_cfg.speech_fallback_models,
+                                       conv_cfg.speech_max_seconds) if conv_cfg.speech else None)
+            conversations = ConversationManager(conv_cfg, llm, PeopleChannel(account),
                                                 ConversationStore(cfg.data_dir / "conversations.sqlite3"),
-                                                account.notify_owner)
+                                                account.notify_owner, transcriber=transcriber)
         supervisor = Supervisor(agents, account.notify_owner, profiles, conversations,
                                 control=Store(cfg.data_dir / "control.sqlite3"), llm=llm,
                                 allowed_models=[cfg.llm.model, *cfg.llm.allowed_models])

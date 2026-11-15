@@ -117,6 +117,10 @@ def parse_command(text: str) -> Command:
             onoff = {"вкл": "on", "on": "on", "выкл": "off", "off": "off"}.get(words[1])
             key = "first" if words[0] in ("первым", "first") else "intimacy"
             return Command("chat_mode", f"{key}:{onoff}") if onoff else Command("unknown", text)
+        if len(words) == 2 and words[0] in ("незнакомые", "strangers"):
+            mode = {"спрашивать": "ask", "ask": "ask", "вести": "lead", "веди": "lead", "lead": "lead",
+                    "игнор": "ignore", "ignore": "ignore"}.get(words[1])
+            return Command("chat_mode", f"strangers:{mode}") if mode else Command("unknown", text)
         if len(words) == 2 and words[0] in ("порог", "threshold") and words[1].isdigit() and 1 <= int(words[1]) <= 10:
             return Command("chat_mode", f"min:{int(words[1])}")
         arg = {"вкл": "on", "on": "on", "выкл": "off", "off": "off", "авто": "auto", "auto": "auto",
@@ -190,7 +194,8 @@ def help_text(bots: list[str]) -> Html:
         "",
         b("Переписка с мэтчами"),
         Html(f"{code('/chat вкл | выкл | подтверждение | авто')} · {code('/chat первым вкл | выкл')} · "
-             f"{code('/chat порог 9')} · {code('/chat интим вкл | выкл')} · {code('/dialogs')} · "
+             f"{code('/chat порог 9')} · {code('/chat интим вкл | выкл')} · "
+             f"{code('/chat незнакомые спрашивать | вести | игнор')} · {code('/dialogs')} · "
              f"{code('/lead 123')} · {code('/self 123')}"),
         "",
         Html(f"Обычный текст без «/» агент не читает — можно писать заметки. Команда для одного бота: "

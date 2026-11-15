@@ -27,6 +27,9 @@ class FakePeople:
         self.next_id = 1
         self.typing_calls = 0
         self.fail_send: Exception | None = None
+        self.blobs: dict[int, bytes] = {}
+        self.downloads: list = []
+        self.bio = ""
 
     async def resolve(self, links, mention_ids):
         if not links:
@@ -36,9 +39,20 @@ class FakePeople:
     async def history(self, user_id, limit):
         return self.chats.get(user_id, [])[-limit:]
 
-    def incoming(self, user_id, text, media_kind=None):
+    def incoming(self, user_id, text, media_kind=None, emoji="", duration=0.0, blob=None):
         self.next_id += 1
-        self.chats.setdefault(user_id, []).append(ChatMessage(self.next_id, False, text, 0.0, media_kind))
+        self.chats.setdefault(user_id, []).append(ChatMessage(self.next_id, False, text, 0.0, media_kind, emoji,
+                                                              duration))
+        if blob is not None:
+            self.blobs[self.next_id] = blob
+        return self.next_id
+
+    async def download(self, user_id, msg_id, *, thumb=False):
+        self.downloads.append((msg_id, thumb))
+        return self.blobs.get(msg_id)
+
+    async def profile(self, user_id):
+        return self.bio
 
     def owner_writes(self, user_id, text):
         self.next_id += 1
@@ -961,7 +975,9 @@ async def test_switching_writing_first_off_before_the_chat_is_looked_at(tmp_path
 
 
 async def test_intimacy_is_an_opt_in_from_config_or_telegram(tmp_path):
-    m, people, inbox, clock = make(tmp_path, write_first=True)
+    from doppelgram.config import ConversationConfig as CC
+    assert CC(about_file=Path("a"), goal_file=Path("g"), style_file=Path("s")).intimacy is True  # the default
+    m, people, inbox, clock = make(tmp_path, write_first=True, intimacy=False)
     await match(m)
     await m.tick()
     assert 'escalate with category "explicit" and no messages' in m.llm.calls[-1][0]["content"]
