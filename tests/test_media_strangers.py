@@ -1166,3 +1166,61 @@ async def test_the_owners_queued_text_is_not_replaced_by_a_new_draft(tmp_path):
         clock.t += 130
         await m.tick()
     assert "мой текст" in people.sent_texts(555)
+
+
+async def test_a_minor_without_a_known_flag_time_gets_no_old_draft_sent(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["хочу тебя"])
+    m.store.update(555, minor=1)  # e.g. flagged by an older version, no time recorded
+    await m.answer_card(card, "ок")
+    assert people.sent_texts(555) == [] and "меньше 18" in inbox[-1]
+
+
+async def test_a_minor_flag_keeps_the_owners_queued_text(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
+    real_typing = people.typing
+
+    async def typing_then_setting(user_id, seconds):
+        people.typing = real_typing
+        await m.command("chat_mode", "first:off")
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_setting
+    await m.answer_card(card, "мой текст")
+    await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+    for _ in range(2):
+        clock.t += 31
+        await m.tick()
+    assert "мой текст" in people.sent_texts(555)
+
+
+async def test_self_during_lead_wins(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    await m.command("self", 555)
+    real_history = people.history
+
+    async def history_then_self(uid, limit):
+        people.history = real_history
+        await m.command("self", 555)
+        return await real_history(uid, limit)
+    people.history = history_then_self
+    await m.command("lead", 555)
+    assert m.store.person(555).state == "owner"
+
+
+async def test_lead_on_an_escalation_survives_a_network_error(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "ты бот?")
+    await answered(m, people, clock)
+    card = 9000 + len(inbox)
+    real_history = people.history
+
+    async def failing(uid, limit):
+        people.history = real_history
+        raise TransportError("network")
+    people.history = failing
+    await m.answer_card(card, "веди")
+    assert "ещё раз" in inbox[-1]
+    await m.answer_card(card, "веди")
+    assert m.store.person(555).state == "active"

@@ -591,6 +591,7 @@ class ConversationManager:
             self.store.add_person(ref, bot, card, now, score)
             if minor:
                 self.store.update(ref.user_id, minor=1)
+                self.store.set(f"minor_at:{ref.user_id}", str(now))
         else:
             if card and not known.card:
                 self.store.update(ref.user_id, card=scrub_text(card))
@@ -637,8 +638,10 @@ class ConversationManager:
         self._chat_epochs[user_id] = self._chat_epochs.get(user_id, 0) + 1
 
     def _redecide(self, user_id: int) -> None:
-        """Forget what was prepared for this chat and answer the person's latest messages again."""
-        self.store.drop_outbox(user_id)
+        """Forget what the agent prepared for this chat and answer the person's latest messages again (the
+        owner's own text still waiting in the queue stays)."""
+        if not self.store.outbox_owner_text(user_id):
+            self.store.drop_outbox(user_id)
         self.store.set(f"redecide:{user_id}", "1")
         self.store.update(user_id, due_at=self.clock())
         self.wake.set()
@@ -1354,11 +1357,22 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self.say(f"Дальше с {person.name} пишете вы. Вернуть агента: /lead {person.user_id}")
             return
         if word in ("веди", "продолжай"):
-            await self._lead(person)
-            await self.say(f"Агент продолжает диалог с {person.name}.")
+            try:
+                led = await self._lead(person)
+            except AccountRestricted:
+                raise
+            except TransportError as exc:  # keep the card: the owner can answer it again
+                log.warning("cannot hand %s to the agent: %s", person.user_id, exc)
+                self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], card["messages"],
+                                    card["ts"])
+                await self.say("Сбой сети, ответьте «веди» на эту карточку ещё раз.")
+                return
+            if led:
+                await self.say(f"Агент продолжает диалог с {person.name}.")
             return
         ok_word = word in ("ок", "ok", "+", "да")
-        minor_at = float(self.store.get(f"minor_at:{person.user_id}") or 0)
+        # Unknown when the flag came (an older database): treat every agent draft as written before it.
+        minor_at = float(self.store.get(f"minor_at:{person.user_id}") or "inf")
         if (ok_word and card["kind"] in ("draft", "escalation") and card["messages"] and person.minor
                 and card["ts"] < minor_at):
             # The agent wrote it before it was known that the person is under 18: never sent on «ок».
@@ -1442,16 +1456,20 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self.say(f"Отправлено {result.sent} из {len(messages)}: диалог остановлен, изменён "
                            f"или аккаунт ограничен.")
 
-    async def _lead(self, person: Person) -> None:
+    async def _lead(self, person: Person) -> bool:
         """Hand the chat (back) to the agent: messages already in the chat are known, not a takeover."""
-        self.store.unset(f"unchecked:{person.user_id}")  # the owner decided: no earlier-chat check
+        epoch = self._epoch_of(person.user_id)
         history = await self.people.history(person.user_id, self.cfg.history_messages)
+        if epoch != self._epoch_of(person.user_id):
+            return False  # the owner did something else with this chat meanwhile (/self, an answer): that wins
+        self.store.unset(f"unchecked:{person.user_id}")  # the owner decided: no earlier-chat check
         outgoing = [m.id for m in history if m.outgoing]
         incoming = [m.id for m in history if not m.outgoing]
         self.store.update(person.user_id, state="active", owner_upto=max(outgoing, default=0),
                           handled_upto=max(incoming, default=0) if person.state == "paused" else person.handled_upto,
                           due_at=self.clock())
         self.wake.set()
+        return True
 
     async def command(self, name: str, arg) -> None:
         try:
@@ -1483,8 +1501,16 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 await self.say("Нет такого диалога. Список: «диалоги».")
                 return
             if name == "lead":
-                await self._lead(person)
-                await self.say(f"{person.name}: ведёт агент.")
+                try:
+                    led = await self._lead(person)
+                except AccountRestricted:
+                    raise
+                except TransportError as exc:
+                    log.warning("cannot hand %s to the agent: %s", person.user_id, exc)
+                    await self.say(f"Сбой сети, повторите /lead {person.user_id}.")
+                    return
+                if led:
+                    await self.say(f"{person.name}: ведёт агент.")
             else:
                 self.store.update(person.user_id, state="owner", due_at=None)
                 self.store.drop_outbox(person.user_id)
