@@ -1593,3 +1593,13 @@ async def test_ignore_mode_does_not_resume_a_cut_short_triage(tmp_path):
     clock.t += 60
     await m.tick()
     assert not any("Вам впервые написал(а)" in t for t in inbox)
+
+
+async def test_a_queued_stranger_is_left_alone_once_strangers_are_ignored(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve")
+    people.incoming(777, "привет)")
+    await m.on_stranger(PersonRef(777, None, "Лена"))  # queued for triage
+    await m.command("chat_mode", "strangers:ignore")
+    clock.t += 60
+    await m.tick()
+    assert not any("Вам впервые написал(а)" in t for t in inbox)

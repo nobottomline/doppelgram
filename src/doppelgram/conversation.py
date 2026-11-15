@@ -1019,7 +1019,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         self.store.update(person.user_id, due_at=None)
         person = self.store.person(person.user_id)
         if person is not None and person.state == "new":
-            await self._triage(person)
+            if self.strangers != "ignore":  # switched to ignore meanwhile: leave them alone
+                await self._triage(person)
             return
         if person is None or person.state != "active":
             return
