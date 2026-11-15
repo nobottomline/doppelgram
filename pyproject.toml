@@ -1,6 +1,6 @@
 [project]
 name = "doppelgram"
-version = "0.1.0"
+version = "0.2.0"
 description = "LLM agent in your own Telegram account that rates profiles in Telegram dating bots by your taste"
 readme = "README.md"
 license = "MIT"
