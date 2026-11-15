@@ -1662,3 +1662,16 @@ async def test_the_owners_own_text_is_never_sent_as_the_agents_quote(tmp_path):
     await answered(m, people, clock)
     await m.answer_card(9000 + len(inbox), "в рэу)")
     assert people.replies == [None]
+
+
+async def test_a_meeting_draft_carries_its_own_quote_and_four_messages(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    old = people.incoming(555, "а ты где учишься?")
+    m.store.set("reply_to:555", str(old))  # left from an earlier, cancelled answer
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "reply", "messages": ["давай", "в субботу", "на кг", "в шесть"]}
+    await answered(m, people, clock)
+    assert "в шесть" in inbox[-1] and m.store.get("reply_to:555") is None
+    await m.answer_card(9000 + len(inbox), "ок")
+    assert people.sent_texts(555) == ["давай", "в субботу", "на кг", "в шесть"] and people.replies[0] is None

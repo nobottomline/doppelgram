@@ -391,14 +391,21 @@ async def test_owner_text_respects_hourly_cap(tmp_path):
     assert people.sent_texts(555) == [] and "лимит" in inbox[-1]
 
 
-async def test_batch_respects_hourly_cap(tmp_path):
+async def test_hourly_cap_is_checked_when_a_series_starts(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="auto", max_sends_per_hour=1)
     m.llm.reply = {"action": "reply", "messages": ["раз", "два", "три"]}
     await match(m)
     await m.tick()
     clock.t += 31
     await m.tick()
-    assert people.sent_texts(555) == ["раз"]
+    assert people.sent_texts(555) == ["раз", "два", "три"]  # a started series is not cut in half
+    people.incoming(555, "ахах")
+    m.on_message(555)
+    m.llm.reply = {"action": "reply", "messages": ["четыре"]}
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert people.sent_texts(555) == ["раз", "два", "три"]  # the next series waits for the hour
 
 
 async def test_approved_draft_waits_for_quiet_hours_to_end(tmp_path):
@@ -508,18 +515,19 @@ async def test_old_database_is_migrated(tmp_path):
     assert store.due_outbox(1.0) == [(1, 0, ["привет"], False, False)]
 
 
-async def test_capped_batch_remainder_is_not_marked_approved(tmp_path):
+async def test_capped_auto_reply_is_not_marked_approved(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="auto", max_sends_per_hour=1)
+    m.store.record_sent(999, 1, clock())  # the hour's quota is already used
     m.llm.reply = {"action": "reply", "messages": ["раз", "два"]}
     await match(m)
     await m.tick()
     clock.t += 31
     await m.tick()
-    assert people.sent_texts(555) == ["раз"]
+    assert people.sent_texts(555) == []
     await m.command("chat_mode", "approve")
     clock.t += 3600
     await m.tick()
-    assert people.sent_texts(555) == ["раз"]  # "два" became a draft, not an automatic send
+    assert people.sent_texts(555) == []  # it became a draft, not an automatic send
     assert "Черновик" in inbox[-1]
 
 
@@ -647,15 +655,17 @@ async def test_ok_waiting_for_the_lock_is_cancelled_by_takeover(tmp_path):
     assert people.sent_texts(555) == [] and m.store.person(555).state == "owner"
 
 
-async def test_capped_escalation_batch_remainder_is_delivered_later(tmp_path):
+async def test_capped_escalation_answer_is_delivered_later(tmp_path):
     m, people, inbox, clock = make(tmp_path, max_sends_per_hour=1)
+    m.store.record_sent(999, 1, clock())  # the hour's quota is already used
     m.llm.reply = {"action": "escalate", "category": "unclear", "messages": ["раз", "два"]}
     await match(m)
     await m.tick()
-    await m.answer_card(last_card(inbox), "ок")
-    assert people.sent_texts(555) == ["раз"]
+    card = last_card(inbox)
+    await m.answer_card(card, "ок")
+    assert people.sent_texts(555) == [] and "лимит" in inbox[-1]
     clock.t += 3700
-    await m.tick()
+    await m.answer_card(card, "ок")  # the card was kept
     assert people.sent_texts(555) == ["раз", "два"]
 
 

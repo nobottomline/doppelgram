@@ -673,6 +673,7 @@ class ConversationManager:
         owner's own text still waiting in the queue stays)."""
         if not self.store.outbox_owner_text(user_id):
             self.store.drop_outbox(user_id)
+            self.store.unset(f"reply_to:{user_id}")
         self.store.set(f"redecide:{user_id}", "1")
         self.store.update(user_id, due_at=self.clock())
         self.wake.set()
@@ -1090,15 +1091,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 # The goal is coming true: prepare an answer for the owner to review. The owner is told even
                 # if the draft cannot be made (budget, model failure).
                 draft: list[str] = []
+                self.store.unset(f"reply_to:{person.user_id}")
                 if not self._over_budget(now):
                     try:
-                        draft = parse_reply(await self._compose(person, history, images))[1]
+                        _, draft, drafted = parse_reply(await self._compose(person, history, images))
+                        self._remember_quote(person.user_id, drafted, history, upto)
                     except LLMError as exc:
                         log.warning("no draft for a meeting offer: %s", exc)
                     fresh = self.store.person(person.user_id)
                     if fresh is None or fresh.state != "active":
                         return  # the owner took over (or blocked) while the draft was being written
-                draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in draft][:3]
+                draft = [humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars] for t in draft][:4]
                 await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
                                      written_at=now)
                 return
@@ -1123,12 +1126,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.update(person.user_id, handled_upto=upto)
             return
         messages = [humanize(t, lowercase=self.cfg.lowercase) for t in raw_messages][:4]
-        quote = decision.get("reply_to")
-        quote = quote if isinstance(quote, int) and any(not m.outgoing and m.id == quote for m in history) else None
-        if quote is not None and quote != upto:  # quoting the newest message is just a normal answer
-            self.store.set(f"reply_to:{person.user_id}", str(quote))
-        else:
-            self.store.unset(f"reply_to:{person.user_id}")
+        self._remember_quote(person.user_id, decision, history, upto)
         messages = [t[:self.cfg.max_message_chars] for t in messages if t]
         if action == "escalate" or not messages:
             category = str(decision.get("category") or "unclear")
@@ -1149,6 +1147,15 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.wake.set()
         else:
             await self._draft(person, history, upto, messages, written_at=now)
+
+    def _remember_quote(self, user_id: int, decision: dict, history: list[ChatMessage], upto: int) -> None:
+        """Keep the model's choice of an earlier message to quote with the first message of this answer."""
+        quote = decision.get("reply_to")
+        valid = isinstance(quote, int) and any(not m.outgoing and m.id == quote for m in history)
+        if valid and quote != upto:  # quoting the newest message is just a normal answer
+            self.store.set(f"reply_to:{user_id}", str(quote))
+        else:
+            self.store.unset(f"reply_to:{user_id}")
 
     def _reply_delay(self, history: list[ChatMessage]) -> float:
         """How long a busy person would take to answer: about as fast as the person answers (or a few
@@ -1351,6 +1358,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 # It went out before a crash, but was never recorded: record it now, never send it twice.
                 mine = lost
                 sent += 1
+                if i == 0:
+                    self.store.unset(f"reply_to:{person.user_id}")
                 self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:])
                 continue
             # ---- synchronous gate: nothing below may await before people.send() ----
@@ -1465,8 +1474,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.wake.set()
             return "stale", latest
         now = self.clock()
-        if self.store.sends_since(now - 3600) >= self.cfg.max_sends_per_hour:
-            return "capped", latest
+        if first_of_batch and self.store.sends_since(now - 3600) >= self.cfg.max_sends_per_hour:
+            return "capped", latest  # checked when a series starts: a started series is not cut in half
         if first_of_batch and not history and not approved and not self.may_write_first(person.score):
             return "declined", latest  # writing first was switched off (or the threshold raised) meanwhile
         if (first_of_batch and not history  # writing first: the person has not written anything yet

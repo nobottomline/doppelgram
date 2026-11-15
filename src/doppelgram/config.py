@@ -158,7 +158,7 @@ class ConversationConfig:
     write_first: bool = False
     write_first_min_score: int = 9
     first_messages_per_day: int = 3
-    max_sends_per_hour: int = 20
+    max_sends_per_hour: int = 60  # messages per hour over all chats, checked when a series starts
     settle_s: float = 12.0  # wait for a burst of incoming messages before answering
     # A busy person's pace, never instant: the delay follows how fast the person answers (mirror_pace),
     # within reply_delay_min_s..reply_delay_max_s, and now and then a long pause (long_delay_chance).
