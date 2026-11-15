@@ -152,7 +152,7 @@ def _prompt_text(text: str) -> str:
 _ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^\s*import\s+[\w.]+(?:\s+as\s+\w+)?\s*$|^\s*from\s+[\w.]+\s+import\s+[\w*]|\bfunction\s*\w*\s*\(|console\.log|"
                                r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|^\s*return\s+\w+\s*(?:[-+*/%(\[.]|$)|"
                                r"as an ai|language model|языков\w+\s+модел|как\s+ии\b|ии-ассистент|"
-                               r"(?:^|\n)\s*1[.)]\s.+\n\s*2[.)]\s", re.I | re.M)
+                               r"(?:^|\n)\s*(?:1|а|a)[.)]\s.+\n\s*(?:2|б|b)[.)]\s", re.I | re.M)
 # A test whether this is a bot: an assistant's task or an instruction to the model. Not escalated: the agent
 # answers like a person (does not do it), and the prompt gets a heads-up.
 _TASK_IN_RE = re.compile(r"напиши\s+(?:мне\s+)?(?:код|функци|программ|скрипт|сочинени|эссе|стих|реферат|рецепт|текст)|"
@@ -355,6 +355,9 @@ def _smiley_spans(text: str) -> list[tuple[int, int]]:
         if ch == "(":
             open_count += 1
         elif ch == ")":
+            if re.search(r"[:;=]-?$", text[:i]):  # an emoticon: a smiley even inside brackets
+                marks.append(i)
+                continue
             if open_count:
                 open_count -= 1
                 continue

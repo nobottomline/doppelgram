@@ -628,8 +628,10 @@ def test_smileys_are_found_and_taken_off_cleanly():
 def test_a_list_is_still_caught_after_taming(tmp_path):
     from doppelgram.conversation import classify_outgoing
     m = tamer(tmp_path, ["привет", "ну да"])
-    tamed = m._tame(["1) люблю горы\n2) люблю море"], [])
-    assert classify_outgoing(tamed[0]) == "assistant"
+    for listed in ("1) люблю горы\n2) люблю море", "а) люблю горы\nб) люблю море", "a) mountains\nb) sea"):
+        assert classify_outgoing(m._tame([listed], [])[0]) == "assistant"
+    assert m._tame(["люблю читать (когда есть время :) особенно вечером)"], []) == \
+        ["люблю читать (когда есть время, особенно вечером)"]
 
 
 def tamer(tmp_path, style_lines):
