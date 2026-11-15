@@ -388,6 +388,21 @@ class ConversationStore:
     def record_sent(self, user_id: int, msg_id: int, now: float) -> None:
         self.db.execute("INSERT OR IGNORE INTO sent VALUES(?, ?, ?)", (msg_id, user_id, now))
 
+    def commit_send(self, user_id: int, msg_id: int, now: float, handled_upto: int,
+                    remaining: list[str] | None) -> None:
+        """One transaction for a message that went out: recorded, the chat marked, and (for a queued series)
+        the queue trimmed, so a crash can never leave it both sent and still queued."""
+        self.db.execute("BEGIN")
+        try:
+            self.record_sent(user_id, msg_id, now)
+            self.db.execute("UPDATE people SET handled_upto=?, first_sent=1 WHERE user_id=?", (handled_upto, user_id))
+            if remaining is not None:
+                self.trim_outbox(user_id, remaining)
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        self.db.execute("COMMIT")
+
     def sent_ids(self, user_id: int) -> set[int]:
         return {r[0] for r in self.db.execute("SELECT msg_id FROM sent WHERE user_id=?", (user_id,))}
 
@@ -1156,9 +1171,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         self.store.set_outbox(user_id, upto, messages, self.clock(), approved)  # in case it was dropped above
         result = await self._deliver(person, upto, messages, approved=approved, from_outbox=True)
         rest = messages[result.sent:]
-        if self.store.get(f"redecide:{user_id}") and not approved:
-            self.store.drop_outbox(user_id)
-            return  # the chat is answered anew, not with what was left of these messages
+        if self.store.get(f"redecide:{user_id}"):
+            self.store.drop_outbox(user_id)  # answered anew: not with what was left of these messages
+            if approved and rest:
+                await self.say(f"{person.name}: {len(rest)} из одобренных сообщений не отправлены, диалог "
+                               f"изменился (например, выяснилось, что собеседнику меньше 18).")
+            return
         if result.status == "capped":
             self.store.set_outbox(user_id, upto, rest, self.clock() + 900, approved)
         elif result.status == "interrupted":
@@ -1215,10 +1233,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 return Delivery("send_failed", sent)
             # ---- progress first: whatever happens next, this message is never sent again ----
             sent += 1
-            self.store.record_sent(person.user_id, msg_id, self.clock())
-            if from_outbox:  # the queue holds only what is still unsent: a restart resumes, never repeats
-                self.store.trim_outbox(person.user_id, messages[i + 1:])
-            self.store.update(person.user_id, handled_upto=latest if owner_text else upto, first_sent=1)
+            # The queue holds only what is still unsent: a restart resumes, never repeats.
+            self.store.commit_send(person.user_id, msg_id, self.clock(), latest if owner_text else upto,
+                                   messages[i + 1:] if from_outbox else None)
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         return Delivery("sent", sent)
@@ -1326,9 +1343,21 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if person.state == "paused":
             self.store.update(person.user_id, state="active")  # the owner answered the escalation
         epoch = self._epoch_of(person.user_id)  # taken before the lock: a later "сам" still cancels this
+        # A copy in the outbox until each message is out: a restart while waiting for the lock or typing
+        # resumes what the owner approved (the lock keeps the queue from sending it twice meanwhile).
+        self.store.set_outbox(person.user_id, card["upto"], messages, self.clock() + 60, approved=True)
         async with self.lock:
             result = await self._deliver(person, card["upto"], messages, approved=True, owner_text=owner_text,
-                                         epoch=epoch)
+                                         epoch=epoch, from_outbox=True)
+        rest = messages[result.sent:]
+        redecide = bool(self.store.get(f"redecide:{person.user_id}"))  # e.g. a minor flag learnt meanwhile
+        keep_rest = (result.status == "interrupted" and rest and not redecide
+                     and (self.store.person(person.user_id) or person).state in ("active", "paused"))
+        if keep_rest:  # a setting changed mid-series: the queue sends the rest after re-checking
+            self.store.set_outbox(person.user_id, card["upto"], rest, self.clock(), approved=True)
+            self.wake.set()
+        elif not (result.status in ("capped", "error") and result.sent):
+            self.store.drop_outbox(person.user_id)  # _deliver queued the rest itself in those two cases
         if result.status == "sent":
             # The owner answered: the agent may continue, unless the owner took over meanwhile.
             if self.store.person(person.user_id).state in ("paused", "active"):
@@ -1358,6 +1387,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                            + ("Остальное повторю сам." if result.sent else "Ответьте на карточку ещё раз позже."))
         elif result.status == "send_failed":
             await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог.")
+        elif keep_rest:
+            await self.say(f"Отправлено {result.sent} из {len(messages)}, остальное отправлю следом.")
+        elif redecide and rest:
+            await self.say(f"Отправлено {result.sent} из {len(messages)}: диалог изменился (например, выяснилось, "
+                           f"что собеседнику меньше 18), остальное не отправляю.")
         else:
             await self.say(f"Отправлено {result.sent} из {len(messages)}: диалог остановлен, изменён "
                            f"или аккаунт ограничен.")

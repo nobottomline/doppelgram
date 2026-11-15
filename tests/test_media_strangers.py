@@ -929,3 +929,78 @@ async def test_a_restart_while_typing_resumes_the_queued_reply_without_repeats(t
     clock.t += 1
     await restarted.tick()
     assert people.sent_texts(555) == ["привет)", "как день?"]
+
+
+async def owner_ok_card(tmp_path, messages):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": messages}
+    await answered(m, people, clock)
+    return m, people, inbox, clock, 9000 + len(inbox)
+
+
+async def test_an_approved_rest_is_not_sent_after_a_minor_flag(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
+    real_send = people.send
+
+    async def send_then_minor(user_id, text):
+        people.send = real_send
+        msg_id = await real_send(user_id, text)
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        return msg_id
+    people.send = send_then_minor
+    await m.answer_card(card, "ок")
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "хочу тебя" not in people.sent_texts(555)
+
+
+async def test_an_approved_series_survives_a_setting_change_in_the_middle(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "как день прошёл?"])
+    real_send = people.send
+
+    async def send_then_setting(user_id, text):
+        people.send = real_send
+        msg_id = await real_send(user_id, text)
+        await m.command("chat_mode", "first:off")
+        return msg_id
+    people.send = send_then_setting
+    await m.answer_card(card, "ок")
+    assert "остальное отправлю следом" in inbox[-1]
+    clock.t += 1
+    await m.tick()
+    assert people.sent_texts(555) == ["привет)", "как день прошёл?"]
+
+
+async def test_an_approved_answer_is_kept_if_the_process_dies_before_sending(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "как день?"])
+
+    class Crash(Exception):
+        pass
+
+    async def die(user_id, seconds):
+        raise Crash()
+    real_typing, people.typing = people.typing, die
+    with pytest.raises(Crash):
+        await m.answer_card(card, "ок")
+    people.typing = real_typing
+    restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
+    clock.t += 61
+    await restarted.tick()
+    assert people.sent_texts(555) == ["привет)", "как день?"]
+
+
+def test_a_send_is_recorded_and_dequeued_in_one_transaction(tmp_path):
+    from test_conversation import ConversationStore
+    store = ConversationStore(":memory:")
+    store.add_person(PersonRef(1, None, "a"), "b", "", 0.0)
+    store.set_outbox(1, 5, ["x", "y"], 0.0)
+
+    def boom(user_id, remaining):
+        raise RuntimeError("crash")
+    store.trim_outbox = boom
+    with pytest.raises(RuntimeError):
+        store.commit_send(1, 77, 1.0, 5, ["y"])
+    assert store.sent_ids(1) == set() and store.outbox_is(1, 5, ["x", "y"])
