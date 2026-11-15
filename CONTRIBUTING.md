@@ -1,7 +1,7 @@
 # Contributing
 
-Thanks for helping. Doppelgram acts in a real Telegram account, so changes are judged first by what they can
-make the agent do on its own.
+Thanks for helping. Doppelgram acts in a real Telegram account and talks to real people, so a change is judged
+first by what it can make the agent do on its own.
 
 ## Setup
 
@@ -11,7 +11,21 @@ uv run ruff check
 uv run pytest
 ```
 
-CI runs the same commands on Linux, macOS and Windows; a pull request needs all of them green.
+CI runs the same commands on Linux, macOS and Windows; a pull request needs all of them green. To see the
+conversation agent at work without Telegram, use `uv run doppelgram -c config.toml test-chat` (see the README).
+
+## Project layout
+
+| Module | Responsibility |
+|---|---|
+| `agent.py` | one agent per dating bot: reads the screen, applies the rules, asks the model, presses buttons |
+| `brain.py` | the rating prompt, decision validation, privacy sanitizers |
+| `conversation.py` | chats with matches and people who write first: pace, plans, meetings, safety checks, the queue |
+| `supervisor.py`, `control.py`, `settings.py`, `ui.py` | owner commands, cards and runtime settings |
+| `telegram.py`, `transport.py`, `models.py` | the Telethon boundary, its error model and the shared data types |
+| `llm.py`, `speech.py`, `media.py` | the OpenAI-compatible client, voice transcription, images |
+| `schedule.py`, `storage.py`, `taste.py`, `config.py` | working hours, SQLite stores, the taste profile, configuration |
+| `cli.py`, `simulate.py` | the command line and the offline chat simulator |
 
 ## Rules
 
@@ -21,7 +35,10 @@ CI runs the same commands on Linux, macOS and Windows; a pull request needs all 
 * **A behaviour change comes with a regression test** that fails without it.
 * **Safety rules stay safe by default.** Anything that can pay, send personal data, contact a person or press
   an unknown button must be off or require the owner by default, and must be covered by tests.
-* **Privacy.** Do not store profiles, ages or other people's photos; log button labels and actions, not texts.
+* **Privacy.** Do not store profiles, ages, chat texts, transcripts or other people's photos; log button labels,
+  actions and statuses, not texts.
+* **Every automatic send passes the checks.** A new path that sends to a person goes through the conversation
+  queue and its send-time gate, so takeovers, minor flags, quiet hours and caps apply to it.
 * Python 3.11+, type hints, `ruff check` clean, line length 120. Keep comments about *why*, not *what*.
 * Commits follow [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `docs:` …).
 

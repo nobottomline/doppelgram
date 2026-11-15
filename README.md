@@ -3,252 +3,59 @@
 [![CI](https://github.com/nobottomline/doppelgram/actions/workflows/ci.yml/badge.svg)](https://github.com/nobottomline/doppelgram/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-An LLM agent that lives in your own **Telegram user account** and helps you meet people in Telegram dating
-bots. It browses profiles in [Дайвинчик](https://t.me/leomatchbot) and [Бибинто](https://t.me/bibinto_bot)
-by **your** taste, tells you about mutual likes, and — if you switch it on — keeps up conversations with
-your matches in your voice. You control it from your other Telegram account.
+Doppelgram is an LLM agent that lives in your own **Telegram user account** and helps you meet people
+through Telegram dating bots. It rates profiles in [Дайвинчик](https://t.me/leomatchbot) and
+[Бибинто](https://t.me/bibinto_bot) by **your** taste, reports mutual likes, and, if you switch it on,
+carries the conversations with your matches in your voice. You control it from your other Telegram account.
 
-It runs on MTProto (Telethon), not the Bot API, and works with any OpenAI-compatible Chat Completions endpoint
-that serves a vision model: OpenRouter, OpenAI, Z.ai, DeepSeek, Groq, vLLM, Ollama, LM Studio and others.
-Parameters a provider rejects are adapted automatically. The default is `openai/gpt-6-luna` via OpenRouter, at
-about $0.2 per 1000 profiles measured without reference photos (each reference photo adds to every request).
-You bring your own API key.
+It speaks MTProto through [Telethon](https://github.com/LonamiWebs/Telethon), not the Bot API, and works with
+any OpenAI-compatible Chat Completions endpoint that serves a vision model: OpenRouter, OpenAI, Z.ai,
+DeepSeek, Groq, vLLM, Ollama, LM Studio and others. You bring your own API key.
 
-## What it does
+> **Read [Responsible use](#responsible-use) before running it.** It acts in a real account, talks to real
+> people on your behalf and sends their profiles to the model provider you choose.
 
-| | |
-|---|---|
-| **Swipes by your taste** | Looks at each profile photo with a vision model and decides like/dislike (Дайвинчик) or a 1–10 rating (Бибинто). |
-| **Learns your taste** | From a text description, rules you add from Telegram (`/rule не нравятся полные`), reference photos you send with a `/like` or `/dislike` caption, and your answers. |
-| **Learns before it acts** | `ручной` mode sends every profile to you first and you answer with one word; `умный` asks only when unsure; `авто` decides alone and occasionally asks you to rate a profile it already rated, to measure and improve agreement. |
-| **Reports matches** | Mutual likes are recorded and sent to you with the link to the person. |
-| **Chats with matches (opt-in)** | Drafts messages in your style from facts you wrote about yourself. `approve` mode: nothing is sent without your "ок". `auto` mode: it writes itself, but hands anything sensitive to you. |
-| **Stays out of trouble** | Human-like pacing, hourly and daily caps, a daily $ budget, FLOOD_WAIT handling, and a circuit breaker that stops everything when Telegram restricts the account. |
+## Contents
 
-## How it works
+- [Features](#features)
+- [Quick start](#quick-start)
+- [Running on a server](#running-on-a-server)
+- [Files you edit](#files-you-edit)
+- [Controlling it from Telegram](#controlling-it-from-telegram)
+- [Rating profiles](#rating-profiles)
+- [Conversations with matches](#conversations-with-matches)
+- [Trying it offline](#trying-it-offline)
+- [Privacy](#privacy)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [Responsible use](#responsible-use)
 
-```
-Telegram updates ──wake──▶ per-bot agent: re-read the bot chat → current card (photo, caption, keyboard)
-                              │  hard rules first: age gate, blocked buttons, limits, match notices
-                              ▼
-            vision LLM (card + your taste text, rules, reference photos, past decisions) → JSON decision
-                              │  validated against the real buttons; anything else → "ask the owner"
-                              ▼
-            supervised: card → you → your answer is clicked and saved as an example
-            auto:       human-like delay → re-check the card did not change → press the button
-```
+## Features
 
-* **Updates only wake the loop.** Every step re-reads the chat from the server; a card is identified by its
-  content (text, picture, visible buttons), so edits in place, reconnects and duplicate updates are the same case.
-* **Reply keyboards are first-class.** Both bots are driven by reply-keyboard buttons; the active keyboard is
-  taken from the latest message that carries one (Бибинто sends it before the photo).
-* **The model only chooses.** It picks a button id from the list it was shown. Paid features, reports and
-  "send a message" traps are blocked per bot (`deny_buttons`), and URL, web-app, payment, phone and
-  location buttons are never pressed.
-* **Bot and chat content is untrusted.** Nothing in a profile or a message can change the agent's task.
+- **Rates profiles by your taste.** A vision model looks at each profile and likes or skips it (Дайвинчик)
+  or gives a 1–10 rating (Бибинто), following your description, rules, reference photos and past answers.
+- **Learns from you.** Three modes: every profile to you first, only doubtful ones, or fully on its own with
+  occasional taste checks that measure how often you agree.
+- **Gets through the bots' screens.** Declines paid offers, skips ads, channel promos and location requests,
+  waits out daily limits and retries on a schedule, and hands real problems (bans, verifications, captchas)
+  to you.
+- **Works like a person.** Working hours, an optional daily norm, human-like pauses, and calm handling of the
+  bots' "too fast" warnings.
+- **Talks to matches (opt-in).** Short messages in your style, a plan for every person, a natural pace,
+  read receipts only when it answers, photos, stickers and voice messages understood, meetings arranged only
+  with your decision.
+- **Stays under your control.** Every action can be paused, overridden or taken over from Telegram, and
+  sensitive moments always come to you.
+- **Keeps little.** No profile photos, captions, ages or chat transcripts are stored.
 
-## Controlling it from Telegram
+## Quick start
 
-Everything is controlled from your other account's DM with the agent (or the agent account's Saved Messages),
-and the same options live in `config.toml`. A value set from Telegram is stored and overrides the file until
-`/reset`; `/settings` shows every effective value and where it comes from.
+Requirements: [uv](https://docs.astral.sh/uv/getting-started/installation/) (it installs Python 3.11+
+itself), Telegram app credentials from <https://my.telegram.org> → *API development tools* (`api_id`,
+`api_hash`) and an API key of an OpenAI-compatible provider (OpenRouter by default). CI runs the test suite
+on Linux, macOS and Windows.
 
-* **Commands start with `/`.** Plain text is never a command, so both chats stay usable for your own notes.
-  Russian aliases work too (`/старт`, `/стоп`, `/статус`, `/режим`, ...).
-* **Answers to a profile are a Telegram reply** to the agent's message: a button (`❤️`), a number (`7`, a rating
-  when the buttons are ratings), optionally with a comment (`7 руки кривые`), `ок` to accept the agent's choice,
-  or `пропуск` to let the agent's choice stand without recording an example. Without a reply: `/ok`, `/skip`, `/7`.
-* **One bot or all:** put the bot's name last (`/stop бибинто`) or right after `/set` (`/set бибинто режим авто`).
-* **`/start` and `/stop` are idempotent:** they report "already running" / "already stopped".
-
-| Command | Effect |
-|---|---|
-| `/start`, `/stop`, `/pause 2ч` | run, stop, pause (all bots, or one by name) |
-| `/status`, `/log`, `/matches` | state, spend and accuracy; recent actions; mutual likes |
-| `/mode ручной \| умный \| авто` | how profiles are rated (see below) |
-| `/settings`, `/set <key> <value>`, `/reset <key\|all>` | runtime settings: `режим`, `порог`, `ожидание`, `проверки`, `проверок_в_час`, `возраст`, `числа`, `автопродолжение`, `после_лимита`, `часы_работы`, `часы`, `пояс`, `дневная_норма`, `норма`, `бюджет`, `лимит`, `задержка`, `отчёт`, `модель` |
-| photo with caption `/like улыбка` or `/dislike` | add a reference photo to your taste |
-| `/rule не нравятся полные`, `/taste`, `/refs`, `/delete правило 3`, `/delete фото 5` | manage the taste profile |
-| `/chat вкл \| выкл \| подтверждение \| авто`, `/dialogs`, `/lead 123`, `/self 123` | chats with matches |
-| `/help` | the full list, formatted |
-
-Messages from the agent use Telegram formatting sparingly (bold, monospace commands), no tables.
-
-### Rating modes
-
-| Mode | Behaviour |
-|---|---|
-| **ручной** (`supervised`) | every profile comes to you first; your answer is pressed and saved as an example |
-| **умный** (`smart`) | the agent rates by itself; profiles below `порог` (confidence) come to you. By default it waits for your answer; `/set ожидание 30` lets it apply its own choice after 30 minutes |
-| **авто** (`auto`) | the agent rates everything itself |
-
-In **умный** and **авто**, the agent occasionally sends you a profile it has already rated (`проверки`, default
-5%, at most `проверок_в_час` per hour and three unanswered) and asks how *you* would rate it, before revealing its
-own choice, so it does not anchor you. High, middle and low decisions are sampled evenly. Your answer never
-presses anything; it becomes a labelled example, and `/status` shows how often you agree.
-
-### Paid features
-
-Offers to buy premium, VIP, stars or boosts are declined automatically (`premium_pattern` + `decline_buttons`
-per bot): the agent presses an explicit refusal such as "Нет" or "Не сейчас" and keeps rating, without asking
-you. "Продолжить" is deliberately not a refusal, since it can mean "agree". An offer without a refusal button,
-or more than five offers in an hour, stops that bot and tells you. Paid and report buttons are also blocked
-(`deny_buttons`), so the model can never press them.
-
-### Bot limits
-
-Free accounts can only rate so much: Leomatch says "Слишком много ❤️ за сегодня", Bibinto "Коала накушалась
-твоих оценок". Such a notice (`limit_pattern`, text messages only) pauses that bot without asking the model, and
-`/status` shows "лимит бота" with the time of the next try. With `автопродолжение` on (default) the agent tries
-again every `после_лимита` hours (Leomatch 4, Bibinto 1): it presses a `resume_buttons` button such as
-"Главное меню" or "🚀 Оценивать" (never a paid one), or sends `/start`. If the bot is still limited it waits
-another interval; you get at most one limit message per six hours. `/start` tries again at once.
-With `/set автопродолжение выкл` the bot stops on the limit and waits for your `/start`.
-
-### Working hours, daily norm, warnings
-
-* **Working hours** (on by default): the bots act only from 10:00 to 23:00 in `timezone` (Moscow by default)
-  and rest at night; `/status` says when they start again. `/set часы 9-22`, `/set пояс +5`, or
-  `/set часы_работы выкл` to work around the clock. A window may cross midnight (`22-02`).
-* **Daily norm** (off by default): after `норма` rated profiles in a local day the bot waits for the next day
-  (and for working hours), and tells you once. `/set дневная_норма вкл`, `/set норма 120`.
-* **Warnings** such as "слишком быстро" or "подозрительная активность" never stop the agent: it waits
-  `warning_pause_s` (8 s) and goes on. A warning that asks for an identity check still comes to you.
-
-Volume is what matters most for the risk of a block: keep the norm modest and the hours natural.
-
-## Conversations with matches
-
-Off by default. When on, the agent only writes to people a dating bot reported as a mutual like — never to
-anyone else. It writes from `about-me.md` (true facts about you, plus notes on what may be embellished and
-what not to mention), toward the goal in `conversation.md`, in the style of `style.md` and of every message
-you wrote yourself in reply to a draft. Output is post-processed to read like a person typing (lowercase,
-no em dashes, no trailing periods).
-
-**Who it writes to.** By default the agent never writes first: it answers only people who wrote to you.
-With `write_first = true` (`/chat первым вкл`) it also opens the chat, but only with matches it rated at
-least `write_first_min_score` (default 9 of 10, `/chat порог 8`) and at most `first_messages_per_day` a day.
-The score is the agent's taste estimate made when it liked the profile (in Бибинто the rating it gave).
-
-**How it talks.** Short messages in your style, reacting to what the person said before asking anything, a
-balance of questions and things about you, threads picked up from their profile and earlier messages, a new
-topic instead of chasing dry answers. It moves the chat toward the goal in `conversation.md` stage by stage;
-when the chat is warm enough, or the person suggests it, the meeting proposal comes to you as a draft, and
-you send it with «ок».
-
-**Money, contacts, calls, intimacy.** The agent declines money requests itself and shares no contacts or
-links (a phone number is not needed in Telegram); a call proposal comes to you as a draft, like a meeting.
-With `intimacy` on (the default, for adult owners; `/chat интим выкл`) the agent may flirt and talk about
-intimate topics when the person clearly wants it too, never pressures, never asks for photos, and hands
-graphic sexting to you; off, such topics come to you. Any sign that the person is under 18 always goes to you.
-
-**Stickers, photos, voice.** Stickers are read as their emoji. Photos, and a frame of gifs, videos and
-video notes, are shown to the model (`see_photos`). Voice messages and video notes are transcribed with an
-audio model on your OpenRouter key (`speech_model`, default `google/gemini-3.8-flash`, about $0.002 a
-minute; OpenRouter needs at least $0.50 on the key for audio requests). Longer ones than
-`speech_max_seconds`, files and anything the agent cannot hear or see come to you. Pictures and transcripts
-are never stored.
-
-**People who write first.** Someone may write to you without a match notice (Бибинто shares your username
-after mutual ratings). Contacts, bots, service, scam and fake accounts and anyone you have chatted with
-before are never touched, and obvious spam is dropped. Others go by `strangers`: `ask` (default) sends
-you a card with their first messages and bio, and you answer «веди», «игнор» or with your own text;
-`lead` lets the agent take up acquaintances itself (a short model check) and asks you about everyone else;
-`ignore`. Switch it with `/chat незнакомые спрашивать | вести | игнор`. There is no limit on chats the
-person started; only writing first is capped.
-
-**Timing and "read".** The agent answers about as fast as the person does: within seconds when the chat is
-lively, slowly when it is slow (`reply_delay_min_s`..`reply_delay_max_s`), sometimes after a long pause, and
-never during quiet hours. A turn may be a few short messages in a row, typed one after another. Usually they
-are plain messages; the agent quotes one of theirs only to answer something specific after the chat moved on.
-Their messages are marked as read only when it answers, a few seconds before typing. Answering hours or days
-later, it may open with a short reason that fits your life ("сорри, пары были"); asked why it took long, it
-answers the same way.
-
-**A plan for every person.** The agent keeps a compact plan per person (character, interests, how they
-write, what works and what to avoid, what they want, open threads, stage, next move) and follows it: curiosity
-and a little mystery, light teasing and callbacks, real attention to details, matching their investment, a
-light future before any concrete plan. Now and then it ends a lively chat on a high note with a real reason
-("побежал на тренировку, вечером напишу") and keeps the promise. If the person goes quiet after a warm chat,
-it writes once, lightly, after 20-60 hours (`follow_ups`), never twice in a row.
-
-**Meetings.** The agent never fixes a time. When a meeting or call comes up it replies like a busy person
-("гляну расписание и напишу") and sends you a card with free times from your schedule and its draft. Reply to
-the card in plain words ("суббота в 18, кг", "не могу, перенеси на следующую неделю") and it writes that to
-the person; «ок» sends its draft, «!текст» sends your words as they are.
-
-**Chats waiting at start.** When the agent starts (or `/chat вкл`), it looks again at the chats it leads and
-triages unanswered chats people started in the last `backlog_days` days, one after another, like any
-stranger: with `strangers = "lead"` it takes up acquaintances and asks you about the rest.
-
-**Try it offline first.** `doppelgram -c config.toml test-chat` lets the real agent (your files, prompt and
-guards) talk to a model playing a match, without Telegram. Options: `--card` (their profile), `--persona`
-(how they behave, e.g. "отвечает сухо"), `--agent-first`, `--turns`.
-
-These rules hold in every mode:
-
-* **Facts only from your profile.** Embellishment only where you explicitly allowed it; nothing invented.
-* **"Are you a bot?" is never answered by the agent.** It never claims or denies being an AI; the chat is
-  paused and handed to you.
-* **Meetings and calls, media, and anything unclear** go to you with the context (and a draft for meetings
-  and calls); intimate topics too unless you allowed them; the chat waits for your answer.
-* **You can always take over.** If you write to the person yourself, the agent steps back from that chat.
-* **Account safety.** Writing first is off by default and capped by `first_messages_per_day` when on (writing
-  first to strangers is the main cause of `PEER_FLOOD` restrictions); an hourly send cap, quiet hours and
-  human-like delays with a typing indicator.
-
-## What is stored
-
-Profiles stay in Telegram; Doppelgram keeps only what it needs to work, in `data/` on your server.
-
-**Kept:**
-
-* The Telegram session. Like any Telegram client, including the official apps, it caches the ids,
-  usernames and names of chats it sees; without that cache it could not find the bots or you after a
-  restart.
-* Per bot:
-  * hashes of the messages it handled;
-  * the label and time of every button it pressed;
-  * your answers with the model's short visual description of the photo (digits, and the name and city
-    from the profile, removed);
-  * links to mutual likes;
-  * LLM spend.
-* Your taste: the rules and the reference photos *you* sent.
-* Only with conversations enabled, per match (a conversation needs memory):
-  * name and username;
-  * the profile text without digits;
-  * the agent's notes without digits;
-  * drafts waiting for your "ок" or for their send time (deleted once sent or dropped);
-  * your style examples.
-
-**Never kept:**
-
-* other people's photos;
-* profile captions;
-* ages (the age is read from the caption only for the current decision);
-* the model's explanations;
-* the bots' pop-up answers;
-* free text the agent typed to a bot (only commands, numbers and button labels are logged).
-
-Errors from the LLM provider are logged as HTTP status and error code only.
-
-The system log records actions and confidence only.
-
-**Sent to your LLM provider:** the current profile photo and caption (ages per `age_in_prompt`; standalone
-numbers 10–18 removed while `hide_numbers_10_18` is on, the default), your taste and past answers. Everything sent goes under your own API key.
-
-The leading block of `#` lines in `taste.md`, `about-me.md`, `style.md` and the task files is a comment the
-model never sees; headings and hashtags further down are kept. The `taste`, `about-me` and `style` templates
-contain only that comment, so nothing is assumed about you until you write it. The task templates and
-`conversation.example.md` hold working instructions for the bots and for chats; they are fine as they are.
-
-## Quick start (macOS, Linux, Windows)
-
-Needs [uv](https://docs.astral.sh/uv/getting-started/installation/) (it installs Python 3.11+ itself) and
-Telegram app credentials from <https://my.telegram.org> → *API development tools* (`api_id`, `api_hash`).
-CI runs the test suite on all three systems.
-
-macOS / Linux:
+macOS and Linux:
 
 ```sh
 git clone https://github.com/nobottomline/doppelgram && cd doppelgram
@@ -266,63 +73,259 @@ Copy-Item config.example.toml config.toml; Copy-Item .env.example .env
 Get-ChildItem *.example.md | ForEach-Object { Copy-Item $_ ($_.Name -replace '\.example\.md$', '.md') }
 ```
 
-Then fill in `.env` (Telegram credentials, LLM key) and `owner.user_ids` in `config.toml`, write your taste in
-`taste.md`, and:
+Then:
+
+1. Put the Telegram credentials and the LLM key in `.env`.
+2. Set `owner.user_ids` in `config.toml` to the id of the account you will control it from
+   (`uv run doppelgram -c config.toml resolve @your_username` prints it). Write to the agent account once
+   from that account, so Telegram lets the agent answer you.
+3. Describe your taste in `taste.md` (see [Files you edit](#files-you-edit)).
+4. Log in and run:
 
 ```sh
-uv run doppelgram -c config.toml login     # once: QR code, Telegram → Settings → Devices → Link Desktop Device
-uv run doppelgram -c config.toml run       # keep it running; control it from your other account with /start
+uv run doppelgram -c config.toml login     # once: a QR code, scan it in Telegram → Settings → Devices
+uv run doppelgram -c config.toml run       # keep it running, then send /start from your other account
 ```
 
-Files are read as UTF-8 on every system. On Windows `chmod` does not apply: keep `.env`, `*.session` and
-`data/` in a folder only your user can read (inside your user profile, not a shared drive).
-The agent has to stay online, so for daily use a small always-on Linux server is the practical choice:
+On Windows `chmod` does not apply: keep `.env`, `*.session` and `data/` in a folder only your user can read.
+The agent has to stay online, so for daily use an always-on Linux server is the practical choice.
 
-## Setup (Ubuntu VPS)
+## Running on a server
 
-1. Create app credentials at <https://my.telegram.org> → *API development tools* (`api_id`, `api_hash`).
-2. On the server, from a checkout of this repository: `sudo ./deploy/install.sh`.
-3. Fill in `/opt/doppelgram/.env` (Telegram credentials and your OpenRouter key), then `config.toml`
-   (`owner.user_ids` — find your other account's id with `doppelgram resolve @username`), `taste.md`, and,
-   for conversations, `about-me.md`, `conversation.md`, `style.md`.
-4. Log in once (QR: Telegram → Settings → Devices → Link Desktop Device):
-   `sudo -u doppelgram /opt/doppelgram/.venv/bin/doppelgram -c /opt/doppelgram/config.toml login`
-5. `systemctl enable --now doppelgram`, then send `/start` from your other account (`/help` lists everything).
-6. Logs: `journalctl -u doppelgram -f`. State: `data/*.sqlite3`.
+On Ubuntu, from a checkout of this repository:
 
-Check the model on local pictures before going live:
+1. `sudo ./deploy/install.sh` installs it to `/opt/doppelgram` with a dedicated user and a systemd unit. It is
+   idempotent: it never overwrites `.env`, `config.toml`, your `.md` files or `data/`, and keeps every file
+   readable only by the service user.
+2. Fill in `/opt/doppelgram/.env`, `config.toml` and your `.md` files.
+3. Log in once: `sudo -u doppelgram /opt/doppelgram/.venv/bin/doppelgram -c /opt/doppelgram/config.toml login`.
+4. `systemctl enable --now doppelgram`, then send `/start` from your other account. `/help` lists everything.
+5. Logs: `journalctl -u doppelgram -f`. State: `data/*.sqlite3`.
+
+## Files you edit
+
+| File | What it is |
+|---|---|
+| `.env` | secrets: `TG_API_ID`, `TG_API_HASH`, `OPENROUTER_API_KEY` (or your provider's key) |
+| `config.toml` | everything else: the bots, modes, limits, model, privacy and conversation settings, with comments |
+| `taste.md` | who you like, in your own words; read before every rating |
+| `task-leomatch.md`, `task-bibinto.md` | how each bot works and what to do on its screens; the templates are ready to use |
+| `about-me.md` | true facts about you for conversations, with notes on what may be embellished or should not be mentioned |
+| `conversation.md` | what you want from meeting people and how the agent should talk |
+| `style.md` | examples of how you write, one message per line |
+
+The leading block of `#` lines in these files is a comment the model never sees. The `taste`, `about-me` and
+`style` templates contain only that comment, so nothing is assumed about you until you write it.
+
+## Controlling it from Telegram
+
+Everything is controlled from your other account's private chat with the agent account (or from the agent
+account's Saved Messages). Plain text is never a command, so both chats stay usable for your own notes.
+
+- **Commands start with `/`.** Russian aliases work too (`/старт`, `/стоп`, `/статус`, `/режим`).
+- **One bot or all:** put the bot's name last (`/stop бибинто`) or right after `/set` (`/set бибинто режим авто`).
+- **Answers to the agent's cards are Telegram replies** to the card.
+- **Settings:** `/settings` shows every value and where it comes from. A value set with `/set` is stored and
+  overrides `config.toml` until `/reset`.
+
+| Command | Effect |
+|---|---|
+| `/start`, `/stop`, `/pause 2ч` | run, stop or pause all bots or one |
+| `/status`, `/log`, `/matches` | state, total spend and agreement; recent actions; mutual likes |
+| `/mode ручной \| умный \| авто` | how profiles are rated |
+| `/settings`, `/set <key> <value>`, `/reset <key\|all>` | runtime settings (`/help` lists the keys) |
+| photo with caption `/like улыбка` or `/dislike` | add a reference photo to your taste |
+| `/rule не нравятся полные`, `/taste`, `/refs`, `/delete правило 3` | manage the taste profile |
+| `/chat вкл \| выкл \| подтверждение \| авто` | switch conversations on or off and choose drafts or auto |
+| `/chat первым вкл \| выкл`, `/chat порог 9`, `/chat интим вкл \| выкл`, `/chat незнакомые спрашивать \| вести \| игнор` | conversation policies |
+| `/dialogs`, `/lead 123`, `/self 123` | list chats, hand one to the agent, take one over |
+| `/help` | the full list |
+
+## Rating profiles
+
+### Modes
+
+| Mode | Behaviour |
+|---|---|
+| **ручной** (`supervised`) | every profile comes to you first; your answer is pressed and saved as an example |
+| **умный** (`smart`) | the agent rates by itself; profiles below `порог` (confidence) come to you |
+| **авто** (`auto`, default) | the agent rates everything itself |
+
+To answer a profile card, reply with a button (`❤️`), a number (`7`), optionally with a comment
+(`7 нравится улыбка`), `ок` to accept the agent's choice or `пропуск` to let it stand without an example.
+
+In **умный** and **авто** the agent occasionally sends you a profile it has already rated (`проверки`, 5% by
+default) and asks how *you* would rate it before revealing its own choice, so it cannot anchor you. Your
+answer becomes a labelled example; `/status` shows how often you agree. For writing first to matches the
+agent also keeps a 1–10 taste score of every profile it likes.
+
+### Paid offers, ads and problems
+
+- **Paid offers** (premium, VIP, stars, boosts) are declined with an explicit refusal button. A button with a
+  price or a purchase verb is never pressed, not even by the model.
+- **Ads, channel promos, polls, location or phone requests** are skipped with a button that leads back to the
+  profiles, or `/start`.
+- **Bans, blocks, verifications and captchas** always come to you.
+- Paid, report and "send a message" buttons are blocked per bot (`deny_buttons`); URL, web-app, payment,
+  phone and location buttons are never pressed.
+
+### Limits, hours and pace
+
+- **Bot limits.** "Слишком много ❤️ за сегодня" or "Коала накушалась" pauses that bot without asking the model.
+  With `автопродолжение` on (default) it tries again every `после_лимита` hours (Дайвинчик 4, Бибинто 1) with
+  a free button such as "Главное меню"; with it off, the bot waits for your `/start`.
+- **Working hours** (on by default): 10:00–23:00 in `timezone`. `/set часы 9-22`, `/set пояс +5`,
+  `/set часы_работы выкл`.
+- **Daily norm** (off by default): stop after `норма` rated profiles a day. `/set дневная_норма вкл`.
+- **Warnings** such as "слишком быстро" pause a few seconds and the bot goes on.
+- **Spend.** `/status` shows the total spent on the model and today's part of the daily budget
+  (`daily_budget_usd`). A profile costs well under a cent; reference photos and many past examples make each
+  request larger.
+
+Volume matters most for the risk of a block: keep the norm modest and the hours natural.
+
+## Conversations with matches
+
+Off by default; switch on with `/chat вкл`. In **approve** mode (default) every message comes to you as a
+draft first; in **auto** mode the agent writes itself and brings you only what you decide.
+
+### Who it talks to
+
+- **Matches.** A mutual like reported by a dating bot. By default the agent never writes first; with
+  `/chat первым вкл` it opens chats only with matches it rated at least `write_first_min_score` (9 of 10),
+  at most `first_messages_per_day` a day.
+- **People who write first** without a match notice (Бибинто shares your username after mutual ratings).
+  Contacts, bots, service, scam and fake accounts, anyone you ever wrote to, and spam are never touched.
+  Others follow `strangers`: `ask` (default) sends you a card with their first messages and bio, answer
+  «веди», «игнор» or with your own text; `lead` lets the agent take up acquaintances itself and asks you about
+  the rest; `ignore` leaves them alone.
+- **Chats waiting at start.** When it starts, or on `/chat вкл`, it looks again at the chats it leads and
+  triages unanswered chats people started in the last `backlog_days` days, one after another.
+
+### How it talks
+
+- **In your voice.** Facts only from `about-me.md`, embellished only where you allowed it; style from
+  `style.md` and from every text you wrote yourself in reply to a draft. Output reads like a person typing:
+  lowercase, no em dashes, no assistant phrasing.
+- **A plan for every person.** The agent keeps a compact plan per person (character, interests, how they
+  write, what works and what to avoid, what they want, open threads and promises, stage, next move) and
+  follows it.
+- **How interest grows.** Reacting before asking, a balance of questions and things about you, curiosity
+  and a little mystery, light teasing and callbacks, attention to details, matching their investment, a new
+  topic instead of chasing dry answers. Now and then it ends a lively chat on a high note with a real reason
+  ("побежал на тренировку, вечером напишу") and keeps the promise.
+- **Pace.** About as fast as the person answers: seconds in a lively chat, longer in a slow one, sometimes a
+  long pause, never in quiet hours. A turn may be a few short messages in a row. It quotes one of their
+  messages only to answer something specific after the chat moved on.
+- **Read receipts.** Their messages are marked read only when the agent answers, a few seconds before typing.
+- **Late answers.** Answering hours later, it may open with a short reason from your life ("сорри, пары
+  были"), and it answers "why so long?" the same way.
+- **Quiet chats.** If a warm chat goes quiet, it writes once, lightly, after 20–60 hours (`follow_ups`),
+  never twice in a row.
+- **Photos, stickers, voice.** Photos and frames of gifs, videos and video notes are shown to the model;
+  stickers are read as their emoji; voice messages and video notes are transcribed with an audio model on
+  your OpenRouter key (`speech_model`, about $0.002 a minute; OpenRouter needs $0.50 on the key for audio).
+
+### What always comes to you
+
+- **Meetings and calls.** The agent never fixes a time. It replies like a busy person ("гляну расписание и
+  напишу") and sends you a card with free times from your schedule and its draft. Reply in plain words
+  ("суббота в 18", "не могу, перенеси") and it writes that; «ок» sends its draft, «!текст» your words as
+  they are.
+- **"Are you a bot?"** It never claims or denies being an AI; the chat pauses and waits for you.
+- **Money and contacts.** It declines money requests itself and never shares contacts or links; any promise
+  to pay comes to you.
+- **Intimacy.** With `intimacy` on (default, for adult owners) it may flirt and talk about it when the person
+  clearly wants it too, never pressures and never asks for photos; graphic sexting comes to you. With it off,
+  intimate topics come to you.
+- **Minors.** Any sign that the person is under 18, in a profile, a bio or a message, stops all flirting, and
+  nothing written before it was known is sent.
+- **Media it cannot understand,** long voice messages, files and anything unclear.
+
+You can take over any chat at any time: write to the person yourself, or `/self 123`. The agent steps back
+until `/lead 123`.
+
+## Trying it offline
+
+```sh
+# rate a local picture with your taste and task files
+uv run doppelgram -c config.toml test-llm photo.jpg --bot бибинто --buttons "1,2,3,4,5,6,7,8,9,10"
+
+# let the real conversation agent (your files, prompt and guards) talk to a model playing a match
+uv run doppelgram -c config.toml test-chat --persona "отвечает сухо" --card "Аня, 24, Москва – дизайнер"
+```
+
+`test-chat` options: `--card` (their profile), `--persona` (how they behave), `--agent-first`, `--turns`.
+Nothing touches Telegram.
+
+## Privacy
+
+Everything stays on your machine or server, in `data/`.
+
+**Kept:**
+
+- the Telegram session (like any Telegram client, it caches the ids and names of chats it sees);
+- per bot: hashes of handled messages, the labels and times of pressed buttons, your answers with the model's
+  short visual description (no names, cities or digits), links to mutual likes, LLM spend;
+- your taste: rules and the reference photos *you* sent;
+- with conversations on, per person: name and username, profile text or bio without digits, the agent's plan
+  without digits, a taste score, a minor flag (never the age), drafts and queued messages until they are sent,
+  your style examples.
+
+**Never kept:** other people's photos, profile captions, ages, chat texts, voice transcripts, the model's
+explanations, the bots' pop-up answers, free text typed to a bot.
+
+**Sent to your model provider, under your key:** the current profile photo and caption (ages per
+`age_in_prompt`, numbers 10–18 removed while `hide_numbers_10_18` is on), your taste and past answers; with
+conversations on, the recent chat with that person, pictures from it and voice audio for transcription.
+
+Logs record actions, statuses and confidence, not message texts.
+
+## How it works
 
 ```
-doppelgram -c config.toml test-llm photo.jpg --bot бибинто --buttons "1,2,3,4,5,6,7,8,9,10"
+Telegram updates ──wake──▶ per-bot agent: re-read the bot chat → current card (photo, caption, keyboard)
+                              │  rules first: limits, warnings, paid offers, blocked buttons, match notices
+                              ▼
+            vision LLM (card + taste, rules, reference photos, past decisions) → JSON decision
+                              │  validated against the real buttons; anything else → the owner
+                              ▼
+            ручной: card → you → your answer is pressed and saved as an example
+            авто:   human-like delay → re-check that the card did not change → press
 ```
+
+- **Updates only wake the loop.** Every step re-reads the chat; a card is identified by its content, so edits,
+  reconnects and duplicate updates are the same case.
+- **The model only chooses.** It picks a button from the list it was shown or a command from an allowlist;
+  everything else goes to you.
+- **Bot and chat content is untrusted.** Nothing in a profile or a message can change the agent's task.
+- **Conversations are a separate manager** with its own store, a per-chat queue that survives restarts
+  without repeating messages, and a synchronous check before every send.
 
 ## Development
 
-```
+```sh
 uv sync
 uv run ruff check
 uv run pytest
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). Security issues: [SECURITY.md](SECURITY.md).
+The tests drive the agents against simulated bots that follow the public behaviour of Дайвинчик and Бибинто,
+a simulated chat partner and real Telethon TL objects. No real chats are needed or read.
 
-Tests run the agents against simulated bots that follow the public protocols of Дайвинчик and Бибинто
-(reply keyboards, keyboard-before-photo, edits in place, match notices, limits), a simulated chat partner for
-conversations, and real Telethon TL objects of the current layer. No real chats are needed or read.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules, [SECURITY.md](SECURITY.md) for reporting
+vulnerabilities and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Licensed under [MIT](LICENSE).
 
 ## Responsible use
 
-Read this before you run it.
-
-* **Telegram.** Accounts using unofficial clients are monitored, and automation can get an account limited
-  or frozen. Use your own `api_id`, one stable IP and the default pacing; a secondary account is safer.
-  Telegram's terms restrict using platform data for AI "deployment" without the consent of the people
-  involved — this tool processes other users' profiles and messages, so you are responsible for how you use it.
-* **The dating bots** do not allow automation explicitly; they can ban or shadow-ban accounts for mass likes
-  or spam. Keep the limits low.
-* **Other people's data.** Profile photos and messages of other users are sent to the LLM provider *you*
-  configure, under *your* key. Doppelgram does not store their photos (only your own reference photos, locally);
-  prefer providers with no-training / zero-retention options.
-* **Honesty.** People you chat with believe they are talking to you. The agent never denies being an AI when
-  asked and never invents facts about you; meetings and anything serious are yours to handle. Do not use this
-  to deceive, harass or mass-message people.
+- **Telegram.** Automation in a user account can get it limited or frozen. Use your own `api_id`, one stable
+  IP and the default pacing; a secondary account is safer. Hide your "last seen" from strangers, since the
+  agent keeps the account active. Telegram's terms restrict using platform data for AI without the consent of
+  the people involved: you are responsible for how you use this tool.
+- **The dating bots** do not allow automation explicitly and can ban or shadow-ban accounts for mass likes.
+  Keep the limits low.
+- **Other people's data.** Their profile photos and messages are sent to the model provider *you* configure.
+  Prefer providers with no-training and zero-retention options.
+- **Honesty.** People you chat with believe they are talking to you. The agent never denies being an AI when
+  asked and never invents facts about you; meetings and anything serious are yours to handle. Do not use it to
+  deceive, harass or mass-message people, and never with minors.
