@@ -2023,3 +2023,42 @@ async def test_a_chat_paused_without_a_card_is_picked_up_again_at_start(tmp_path
     clock.t += 1
     await m.tick()
     assert "бот" in inbox[-1] and m.store.open_card(555) is not None
+
+
+@pytest.mark.parametrize("event", ["self", "minor"])
+async def test_events_during_a_quiet_hours_instruction_cancel_it(tmp_path, event):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, quiet_hours="00:00-23:59")
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
+                                if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
+    real_notify = m._notify
+
+    async def notify(text, image=None):
+        if text.startswith("Пишу"):
+            m._notify = real_notify
+            if event == "self":
+                await m.command("self", 555)
+            else:
+                await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10,
+                                 minor=True)
+        return await real_notify(text, image)
+    m._notify = notify
+    await m.answer_card(card, "суббота в 18")
+    assert m.store.outbox_row(555) is None and "ничего не отправляю" in inbox[-1]
+
+
+async def test_a_cancelled_answer_gives_the_card_back(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
+                                if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
+    real_notify = m._notify
+
+    async def notify(text, image=None):
+        if text.startswith("Пишу"):
+            m._notify = real_notify
+            await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        return await real_notify(text, image)
+    m._notify = notify
+    await m.answer_card(card, "суббота в 18")
+    assert m.store.open_card(555) is not None  # the owner can still answer, the chat is not stuck
+    await m.answer_card(card, "!давай в субботу")
+    assert people.sent_texts(555)[-1] == "давай в субботу"

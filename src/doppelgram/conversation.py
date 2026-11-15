@@ -1781,6 +1781,15 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
             await self.say("Черновика нет — напишите текст сами.")
             return
+        current = self.store.person(person.user_id)
+        if current is None or current.state in ("owner", "blocked") or answer_epoch != self._epoch_of(person.user_id):
+            # Something happened while the answer was prepared (/self, a minor flag, another answer).
+            self.store.drop_outbox(person.user_id)
+            if current is not None and current.state == "paused" and self.store.open_card(person.user_id) is None:
+                # The chat still waits for the owner: give the card back so it is not stuck.
+                self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
+            await self.say(f"{person.name}: диалог изменился, пока готовился ответ, ничего не отправляю.")
+            return
         if not owner_text and self._quiet_now() is not None:
             self.store.update(person.user_id, state="active")
             self.store.set_outbox(person.user_id, card["upto"], messages,
@@ -1789,11 +1798,6 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         if owner_text:
             self.store.add_style(text.strip(), self.clock())
-        current = self.store.person(person.user_id)
-        if current is None or current.state in ("owner", "blocked") or answer_epoch != self._epoch_of(person.user_id):
-            await self.say(f"{person.name}: диалог изменился, пока готовился ответ, ничего не отправляю.")
-            self.store.drop_outbox(person.user_id)
-            return
         if current.state == "paused":
             self.store.update(person.user_id, state="active")  # the owner answered the escalation
         epoch = answer_epoch
