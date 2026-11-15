@@ -894,6 +894,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not self.enabled or self.stopped:
             return
         now = self.clock()
+        for p in self.store.people():
+            if p.state == "paused" and self.store.open_card(p.user_id) is None:
+                # The owner's card never got out (a restart while it was being sent): decide that chat anew.
+                self.store.update(p.user_id, state="active", due_at=None)
         led = [p for p in self.store.people() if p.due_at is None and (
             p.state == "active" or (p.state == "new" and self.strangers != "ignore"
                                     and self.store.open_card(p.user_id) is None))]
@@ -1220,6 +1224,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         send_hold = bool(hold) and self.mode == "auto"
         await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
                              written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
+        fresh = self.store.person(person.user_id)
+        if fresh is not None and fresh.minor and not person.minor:
+            send_hold = False  # turned out to be a minor while the card was being sent: nothing agent-written goes
         if send_hold and self.store.open_card(person.user_id) is not None:
             # The agent's own words, checked like any of its messages; the marker lets them out of a paused chat.
             self.store.set(f"hold:{person.user_id}", "1")
@@ -1782,7 +1789,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return
         if owner_text:
             self.store.add_style(text.strip(), self.clock())
-        if person.state == "paused":
+        current = self.store.person(person.user_id)
+        if current is None or current.state in ("owner", "blocked") or answer_epoch != self._epoch_of(person.user_id):
+            await self.say(f"{person.name}: диалог изменился, пока готовился ответ, ничего не отправляю.")
+            self.store.drop_outbox(person.user_id)
+            return
+        if current.state == "paused":
             self.store.update(person.user_id, state="active")  # the owner answered the escalation
         epoch = answer_epoch
         # A copy in the outbox until each message is out: a restart while waiting for the lock or typing

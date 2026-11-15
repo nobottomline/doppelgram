@@ -1973,3 +1973,53 @@ async def test_events_while_the_owner_is_told_what_the_agent_writes_cancel_the_s
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
     assert "в субботу в 18?" not in people.sent_texts(555)
+
+
+async def test_self_while_the_owner_is_told_keeps_the_chat_with_the_owner(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?", "на кг"]}
+                                if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
+    real_notify = m._notify
+
+    async def notify(text, image=None):
+        if text.startswith("Пишу"):
+            m._notify = real_notify
+            await m.command("self", 555)
+        return await real_notify(text, image)
+    m._notify = notify
+    await m.answer_card(card, "суббота в 18")
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert m.store.person(555).state == "owner" and people.sent_texts(555) == []
+
+
+async def test_a_minor_flag_while_the_meeting_card_is_sent_stops_the_hold(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "давай встретимся?")
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["давай, хочу тебя увидеть, гляну"],
+                   "messages": ["давай"]}
+    real_notify = m._notify
+
+    async def notify(text, image=None):
+        if text.startswith("📅"):
+            m._notify = real_notify
+            await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        return await real_notify(text, image)
+    m._notify = notify
+    await answered(m, people, clock)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+async def test_a_chat_paused_without_a_card_is_picked_up_again_at_start(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "ты бот?")
+    m.store.update(555, state="paused", due_at=None)  # the process died while the card was being sent
+    await m.startup()
+    clock.t += 1
+    await m.tick()
+    assert "бот" in inbox[-1] and m.store.open_card(555) is not None
