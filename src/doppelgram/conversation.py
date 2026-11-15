@@ -1204,7 +1204,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         result = await self._deliver(person, upto, messages, approved=approved, owner_text=owner_text,
                                      from_outbox=True)
         rest = messages[result.sent:]
-        if self.store.get(f"redecide:{user_id}"):
+        if self.store.get(f"redecide:{user_id}") and not owner_text:
             self.store.drop_outbox(user_id)  # answered anew: not with what was left of these messages
             if approved and rest:
                 await self.say(f"{person.name}: {len(rest)} из одобренных сообщений не отправлены, диалог "
@@ -1249,6 +1249,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 # Nothing was sent in this round: the caller can safely retry the rest.
                 log.warning("cannot prepare a message for %s: %s", person.user_id, exc)
                 return Delivery("error", sent)
+            if from_outbox and self._already_sent(person.user_id, history, text):
+                # It went out before a crash, but was never recorded: record it now, never send it twice.
+                mine = next(m for m in reversed(history) if m.outgoing)
+                sent += 1
+                self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:])
+                continue
             # ---- synchronous gate: nothing below may await before people.send() ----
             status, latest = self._gate(person.user_id, upto, history, epoch, approved=approved,
                                         owner_text=owner_text, first_of_batch=i == 0, text=text)
@@ -1273,6 +1279,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         return Delivery("sent", sent)
+
+    def _already_sent(self, user_id: int, history: list[ChatMessage], text: str) -> bool:
+        """The chat's last outgoing message is this text but not in our records: an unrecorded send."""
+        last = next((m for m in reversed(history) if m.outgoing), None)
+        return last is not None and last.text == text and last.id not in self.store.sent_ids(user_id)
 
     def _gate(self, user_id: int, upto: int, history: list[ChatMessage], epoch: tuple[int, int], *, approved: bool,
               owner_text: bool, first_of_batch: bool, text: str | None = None) -> tuple[str, int]:
@@ -1406,9 +1417,12 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             result = await self._deliver(person, card["upto"], messages, approved=True, owner_text=owner_text,
                                          epoch=epoch, from_outbox=True)
         rest = messages[result.sent:]
-        redecide = bool(self.store.get(f"redecide:{person.user_id}"))  # e.g. a minor flag learnt meanwhile
-        keep_rest = (result.status == "interrupted" and rest and (owner_text or not redecide)
-                     and (self.store.person(person.user_id) or person).state in ("active", "paused"))
+        fresh = self.store.person(person.user_id) or person
+        # The agent's text is not resumed once the chat is to be answered anew or turned out to be with a minor
+        # while this answer was being sent; the owner's own text always is.
+        redecide = not owner_text and bool(self.store.get(f"redecide:{person.user_id}")
+                                           or (fresh.minor and not person.minor))
+        keep_rest = result.status == "interrupted" and rest and not redecide and fresh.state in ("active", "paused")
         if keep_rest:  # a setting changed mid-series: the queue sends the rest after re-checking
             self.store.set_outbox(person.user_id, card["upto"], rest, self.clock(), approved=True,
                                   owner_text=owner_text)

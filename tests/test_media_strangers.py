@@ -1257,3 +1257,86 @@ async def test_lead_on_a_waiting_stranger_lets_the_agent_answer(tmp_path):
         clock.t += 31
         await m.tick()
     assert people.sent_texts(777) == ["привет) да, было дело", "норм, ты как?"]
+
+
+async def test_a_message_sent_just_before_a_crash_is_not_sent_again(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет)", "как день?"]}
+    await answered(m, people, clock)
+
+    class Crash(Exception):
+        pass
+    real_commit = m.store.commit_send
+
+    def crash(*a, **k):
+        m.store.commit_send = real_commit
+        raise Crash()  # Telegram took the message, the process died before recording it
+    m.store.commit_send = crash
+    clock.t += 31
+    with pytest.raises(Crash):
+        await m._tick()
+    restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
+    clock.t += 1
+    await restarted.tick()
+    assert people.sent_texts(555) == ["привет)", "как день?"]
+
+
+async def test_the_owners_queued_text_survives_a_minor_flag_and_a_network_error(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
+    real_typing, real_history = people.typing, people.history
+
+    async def typing_then_minor_and_error(user_id, seconds):
+        people.typing = real_typing
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+
+        async def failing(uid, limit):
+            people.history = real_history
+            raise TransportError("network")
+        people.history = failing
+        await real_typing(user_id, seconds)
+    people.typing = typing_then_minor_and_error
+    await m.answer_card(card, "мой текст")
+    assert "Ответьте на карточку ещё раз" in inbox[-1]  # not lost: the owner's text waits on its card
+    await m.answer_card(card, "ок")
+    assert people.sent_texts(555) == ["мой текст"]
+
+
+async def test_an_approved_agent_rest_is_not_resumed_after_a_minor_flag(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["привет)", "хочу тебя"])
+    real_send = people.send
+
+    async def send_then_minor(user_id, text):
+        people.send = real_send
+        msg_id = await real_send(user_id, text)
+        await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        m.store.unset("redecide:555")  # e.g. a /lead already re-read the chat meanwhile
+        return msg_id
+    people.send = send_then_minor
+    await m.answer_card(card, "ок")
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "хочу тебя" not in people.sent_texts(555)
+
+
+async def test_the_owners_queued_text_survives_a_minor_flag_while_it_is_typed(tmp_path):
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["черновик"])
+    real_typing = people.typing
+    calls = {"n": 0}
+
+    async def typing(user_id, seconds):
+        calls["n"] += 1
+        if calls["n"] == 1:  # the direct answer is interrupted by a setting: it goes to the queue
+            await m.command("chat_mode", "first:off")
+        elif calls["n"] == 2:  # while the queue types it, the person turns out to be a minor
+            await m.on_match("дайвинчик", ["https://t.me/masha_example"], [], "Маша, 16, Москва", 10, minor=True)
+        await real_typing(user_id, seconds)
+    people.typing = typing
+    await m.answer_card(card, "мой текст")
+    for _ in range(3):
+        clock.t += 31
+        await m.tick()
+    assert "мой текст" in people.sent_texts(555)
