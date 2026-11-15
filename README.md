@@ -225,6 +225,9 @@ numbers 10–18 removed while `hide_numbers_10_18` is on, the default), your tas
 
 In private conversations, peer declarations `мне N` with a two-digit N from 10 through 18 are represented
 as `мне 18` in the LLM prompt, including chat history, understood voice messages, and stranger classification.
+Up to three short inserts such as `если что`, `кстати`, `уже`, `сейчас`, `вообще-то` and `на самом деле`
+are allowed before the number: `мне, если что, 16` becomes `мне, если что, 18`. Words, spacing and punctuation
+are preserved. Arbitrary intervening words and numeric fragments such as `16.5` or `16:00` are not matched.
 The rest of the message and the owner's messages stay unchanged. This rule is always applied to private
 conversations, independently of the bots' `age_in_prompt` and `hide_numbers_10_18` settings. Profile and note
 copies also receive this normalization before the existing bot privacy settings. Telegram messages are never

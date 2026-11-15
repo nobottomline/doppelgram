@@ -111,7 +111,11 @@ _GRAPHIC_RE = re.compile(r"\b(?:ху[йё]|пизд|еба[тл]|ебл|ебу\b
 _SPAM_RE = re.compile(r"(https?://|t\.me/|www\.|заработ|доход\w*\s+от|крипт|инвест|казино|ставк[иа]|бонус|промокод|"
                       r"подпис(?:ывайся|аться)\s+на|переходи\s+по|акци[яи]|скидк|выигр)", re.I)
 _CALL_RE = re.compile(r"(созвон|позвон|звонок|по\s+видео|видеосвяз|набер[уиё])", re.I)
-_PROMPT_AGE_RE = re.compile(r"\b(мне\s+)1[0-8]\b(?![.,]\d)", re.I)
+# Allow short conversational inserts without consuming arbitrary words between "мне" and the number.
+_PROMPT_AGE_RE = re.compile(
+    r"\b(мне(?:\s*[,—–]\s*|\s+)(?:(?:если\s+ч(?:то|[её])|кстати|вообще(?:[-‑]|\s+)то|"
+    r"на\s+самом\s+деле|сейчас|уже|всего|только|пока|вот|почти|аж|же|ну)"
+    r"(?:\s*[,—–]\s*|\s+)){0,3})1[0-8]\b(?![.,:]\d)", re.I)
 
 
 def _prompt_text(text: str) -> str:

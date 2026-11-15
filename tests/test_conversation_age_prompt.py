@@ -57,3 +57,35 @@ async def test_profile_notes_and_stranger_classifier_use_the_same_normalization(
     assert "Bio: мне 18, люблю музыку" in prompt
     assert "привет, мне 18" in prompt
     assert "16" not in prompt and "17" not in prompt
+
+
+@pytest.mark.parametrize("prefix", [
+    "мне если что", "Мне, если что,", "мне если чё", "мне кстати", "мне, кстати, всего",
+    "мне вообще-то", "мне вообще то", "мне вообще‑то", "мне сейчас", "мне уже почти",
+    "мне на самом деле", "мне вот уже", "мне\u00a0если\u00a0что,", "мне — кстати —",
+])
+@pytest.mark.parametrize("age", range(10, 19))
+async def test_peer_age_with_fillers_changes_only_the_number(tmp_path, prefix, age):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    original = f"привет, {prefix} {age}, люблю музыку; у меня 16 пластинок"
+    people.incoming(555, original)
+    people.owner_writes(555, original)
+    await m._compose(m.store.person(555), await people.history(555, 20))
+    prompt = m.llm.calls[-1][1]["content"]
+    assert f"Маша: привет, {prefix} 18, люблю музыку; у меня 16 пластинок" in prompt
+    assert f"owner: {original}" in prompt
+    assert people.chats[555][0].text == original
+
+
+@pytest.mark.parametrize("text", [
+    "мне нужно 16", "мне подарили 17", "мне сказали, что 16", "мне если что 160",
+    "мне кстати 16.5", "мне если что 17,5", "мне сейчас 16:00 удобно", "мне если что 016",
+    "ремне если что 17", "мне если что 19", "мне кстати 16к",
+])
+async def test_age_fillers_do_not_match_arbitrary_words_or_numeric_fragments(tmp_path, text):
+    m, people, inbox, clock = make(tmp_path)
+    await match(m)
+    people.incoming(555, text)
+    await m._compose(m.store.person(555), await people.history(555, 20))
+    assert f"Маша: {text}" in m.llm.calls[-1][1]["content"]
