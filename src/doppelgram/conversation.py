@@ -985,7 +985,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         return [m for m in history if m.outgoing and m.id not in sent and m.id > person.owner_upto]
 
     # --- what the person sent: stickers, photos, voice --------------------------------------
-    MAX_IMAGES = 3  # pictures from the newest messages shown to the model per turn
+    MAX_IMAGES = 3
+    RECOVERY_LOOKBACK = 300  # messages searched for a send interrupted by a crash  # pictures from the newest messages shown to the model per turn
 
     def _label(self, m: ChatMessage) -> str:
         """A message as plain text, without downloading anything (transcripts only from memory)."""
@@ -1513,7 +1514,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         else:
             self.store.drop_outbox(user_id)
             if result.status == "send_failed":
-                await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог.")
+                unsent = rest[1:]
+                await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог."
+                               + (f" Не отправлено: «{' / '.join(unsent)}»." if unsent else ""))
 
     async def _deliver(self, person: Person, upto: int, messages: list[str], *, approved: bool = False,
                        owner_text: bool = False, epoch: tuple[int, int] | None = None,
@@ -1542,7 +1545,17 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 # Nothing was sent in this round: the caller can safely retry the rest.
                 log.warning("cannot prepare a message for %s: %s", person.user_id, exc)
                 return Delivery("error", sent)
-            lost = self._already_sent(person.user_id, history, text) if from_outbox else None
+            lost = None
+            if from_outbox and self.store.get(f"sending:{person.user_id}"):
+                # A send may have been cut by a crash: look far enough back, the person may have written a lot.
+                try:
+                    wide = await self.people.history(person.user_id, self.RECOVERY_LOOKBACK)
+                except AccountRestricted:
+                    raise
+                except (TransportError, RateLimited) as exc:
+                    log.warning("cannot check an interrupted send to %s: %s", person.user_id, exc)
+                    return Delivery("error", sent)
+                lost = self._already_sent(person.user_id, wide, text)
             if lost is not None:
                 # It went out before a crash, but was never recorded: record it now, never send it twice.
                 mine = lost
@@ -1858,7 +1871,13 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self.say(f"Сбой сети: отправлено {result.sent} из {len(messages)}. "
                            + ("Остальное повторю сам." if result.sent else "Ответьте на карточку ещё раз позже."))
         elif result.status == "send_failed":
-            await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог.")
+            unsent = rest[1:]  # the first of the rest may or may not have arrived; the others surely did not
+            if unsent:
+                self.store.add_card(control_msg_id, person.user_id, "own" if owner_text else card["kind"],
+                                    card["upto"], unsent, card["ts"])
+            await self.say(f"Не уверен, дошло ли сообщение до {person.name} (сбой сети) — проверьте диалог."
+                           + (f" Не отправлено: «{' / '.join(unsent)}» — «ок» на эту карточку отправит."
+                              if unsent else ""))
         elif keep_rest:
             await self.say(f"Отправлено {result.sent} из {len(messages)}, остальное отправлю следом.")
         elif redecide and rest:

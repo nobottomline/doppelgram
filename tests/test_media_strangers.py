@@ -2075,3 +2075,48 @@ async def test_lead_cancelled_by_a_minor_flag_gives_the_card_back(tmp_path):
     people.history = history_then_minor
     await m.answer_card(card, "веди")
     assert m.store.open_card(555) is not None and "ещё раз" in inbox[-1]
+
+
+async def test_messages_surely_not_sent_after_a_failed_send_stay_on_the_card(tmp_path):
+    from doppelgram.transport import TransportError
+    m, people, inbox, clock, card = await owner_ok_card(tmp_path, ["раз", "два", "три"])
+    real_send = people.send
+    count = {"n": 0}
+
+    async def flaky(user_id, text, reply_to=None):
+        count["n"] += 1
+        if count["n"] == 2:
+            raise TransportError("timeout")
+        return await real_send(user_id, text, reply_to=reply_to)
+    people.send = flaky
+    await m.answer_card(card, "ок")
+    people.send = real_send
+    assert people.sent_texts(555) == ["раз"] and "Не отправлено: «три»" in inbox[-1]
+    await m.answer_card(card, "ок")
+    assert people.sent_texts(555) == ["раз", "три"]
+
+
+async def test_a_send_cut_by_a_crash_is_found_even_after_many_new_messages(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, history_messages=30)
+    await match(m)
+    people.incoming(555, "привет)")
+    m.llm.reply = {"action": "reply", "messages": ["привет", "как ты?"]}
+    await answered(m, people, clock)
+
+    class Crash(Exception):
+        pass
+    real_commit = m.store.commit_send
+
+    def crash(*a, **k):
+        m.store.commit_send = real_commit
+        raise Crash()
+    m.store.commit_send = crash
+    clock.t += 31
+    with pytest.raises(Crash):
+        await m._tick()
+    for i in range(31):
+        people.incoming(555, f"сообщение {i}")
+    restarted = ConversationManager(m.cfg, m.llm, people, m.store, m._notify, clock=clock, sleep=clock.sleep)
+    clock.t += 1
+    await restarted.tick()
+    assert people.sent_texts(555).count("привет") == 1
