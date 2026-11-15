@@ -103,7 +103,10 @@ _PAY_OUT_RE = re.compile(r"(переведу|скину\s+(?:\w+\s+){0,2}?(?:д�
 # A holding reply ("гляну расписание и напишу") names no day, time or place: those are the owner's to choose.
 _WHEN_WHERE_RE = re.compile(r"(понедельник|вторник|сред[ауые]|четверг|пятниц|суббот|воскресень|выходн|завтра|"
                             r"сегодня|послезавтра|\bв\s*\d{1,2}\b|\d{1,2}[:.]\d{2}|утром|вечером|днём|днем|"
-                            r"у\s+метро|\bкг\b|китай|центр)", re.I)
+                            r"у\s+метро|\bкг\b|китай|центр|\bв\s+(?:час|два|три|четыре|пять|шесть|семь|восемь|девять|"
+                            r"десять|одиннадцать|двенадцать|полдень|полночь|обед)\b|\b(?:у|возле|около|напротив)\s+"
+                            r"(?:парка|метро|входа|кафе|кофейни|фонтана|памятника|универа|дома|тц|кинотеатра)|"
+                            r"\b(?:кафе|кофейн\w*|парк\w*|кино\w*)\b)", re.I)
 # "не заплачу" is a refusal, not a promise; "не заплачу меньше тысячи" still promises a sum.
 _NEGATED_RE = re.compile(r"\b(?:не|ни)\s+\w+", re.I)
 _AMOUNT_HINT_RE = re.compile(r"(меньше|больше|минимум|хотя\s+бы|не\s+более|не\s+менее)", re.I)
@@ -442,7 +445,7 @@ class ConversationStore:
         self.db.execute("INSERT OR IGNORE INTO sent VALUES(?, ?, ?)", (msg_id, user_id, now))
 
     def commit_send(self, user_id: int, msg_id: int, now: float, handled_upto: int,
-                    remaining: list[str] | None) -> None:
+                    remaining: list[str] | None, expected: list[str] | None = None) -> None:
         """One transaction for a message that went out: recorded, the chat marked, and (for a queued series)
         the queue trimmed, so a crash can never leave it both sent and still queued."""
         self.db.execute("BEGIN")
@@ -451,7 +454,7 @@ class ConversationStore:
             self.db.execute("DELETE FROM kv WHERE key=?", (f"sending:{user_id}",))
             self.db.execute("UPDATE people SET handled_upto=?, first_sent=1 WHERE user_id=?", (handled_upto, user_id))
             if remaining is not None:
-                self.trim_outbox(user_id, remaining)
+                self.trim_outbox(user_id, remaining, expected)
         except BaseException:
             self.db.execute("ROLLBACK")
             raise
@@ -510,12 +513,22 @@ class ConversationStore:
         return [(r[0], r[1], json.loads(r[2]), bool(r[3]), r[3] == 2) for r in self.db.execute(
             "SELECT user_id, upto, messages, approved FROM outbox WHERE send_at <= ?", (now,))]
 
-    def trim_outbox(self, user_id: int, remaining: list[str]) -> None:
+    def trim_outbox(self, user_id: int, remaining: list[str], expected: list[str] | None = None) -> None:
+        """Shorten the queued series to what is still unsent; with `expected`, only if the queue still holds
+        exactly that series (a newer answer queued meanwhile is left alone)."""
+        if expected is None:
+            if remaining:
+                self.db.execute("UPDATE outbox SET messages=? WHERE user_id=?",
+                                (json.dumps(remaining, ensure_ascii=False), user_id))
+            else:
+                self.drop_outbox(user_id)
+            return
+        old = json.dumps(expected, ensure_ascii=False)
         if remaining:
-            self.db.execute("UPDATE outbox SET messages=? WHERE user_id=?",
-                            (json.dumps(remaining, ensure_ascii=False), user_id))
+            self.db.execute("UPDATE outbox SET messages=? WHERE user_id=? AND messages=?",
+                            (json.dumps(remaining, ensure_ascii=False), user_id, old))
         else:
-            self.drop_outbox(user_id)
+            self.db.execute("DELETE FROM outbox WHERE user_id=? AND messages=?", (user_id, old))
 
     def outbox_row(self, user_id: int) -> tuple[int, list[str]] | None:
         row = self.db.execute("SELECT upto, messages FROM outbox WHERE user_id=?", (user_id,)).fetchone()
@@ -1439,6 +1452,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             await self._deliver_queued(person, upto, messages, approved, owner_text)
             return
         self.store.drop_outbox(user_id)
+        if hold and not approved:  # a holding reply only goes out on its own in auto mode: the card stays
+            self.store.unset(f"hold:{user_id}")
+            return
         if not approved and self.mode != "auto":
             # Queued in auto mode, but the owner switched to approve meanwhile: ask first.
             history = await self.people.history(user_id, self.cfg.history_messages)
@@ -1526,7 +1542,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 sent += 1
                 if i == 0:
                     self.store.unset(f"reply_to:{person.user_id}")
-                self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:])
+                self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:], messages[i:])
                 continue
             # ---- synchronous gate: nothing below may await before people.send() ----
             status, latest = self._gate(person.user_id, upto, history, epoch, approved=approved,
@@ -1560,7 +1576,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 self.store.unset(f"reply_to:{person.user_id}")
             # The queue holds only what is still unsent: a restart resumes, never repeats.
             self.store.commit_send(person.user_id, msg_id, self.clock(), latest if owner_text else upto,
-                                   messages[i + 1:] if from_outbox else None)
+                                   messages[i + 1:] if from_outbox else None, messages[i:] if from_outbox else None)
             if i + 1 < len(messages):
                 await self.sleep(self.rng.uniform(2, 6))
         after = self.store.get(f"follow_up_after:{person.user_id}")
@@ -1742,6 +1758,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 fresh = self.store.person(person.user_id)
                 if fresh is None or fresh.state in ("owner", "blocked"):
                     await self.say(f"{person.name}: вы забрали диалог, агент ничего не отправляет.")
+                    return
+                if fresh.minor and not person.minor:
+                    self.store.add_card(control_msg_id, person.user_id, card["kind"], card["upto"], [], card["ts"])
+                    await self.say(f"{person.name}: пока агент писал, выяснилось, что собеседнику меньше 18. "
+                                   f"Не отправляю: напишите сами («!текст») или ответьте ещё раз.")
                     return
                 person = fresh
                 messages, owner_text = written, False

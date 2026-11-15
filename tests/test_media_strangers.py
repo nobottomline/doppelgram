@@ -999,7 +999,7 @@ def test_a_send_is_recorded_and_dequeued_in_one_transaction(tmp_path):
     store.add_person(PersonRef(1, None, "a"), "b", "", 0.0)
     store.set_outbox(1, 5, ["x", "y"], 0.0)
 
-    def boom(user_id, remaining):
+    def boom(user_id, remaining, expected=None):
         raise RuntimeError("crash")
     store.trim_outbox = boom
     with pytest.raises(RuntimeError):
@@ -1911,3 +1911,44 @@ async def test_a_promised_follow_up_counts_from_when_the_answer_went_out(tmp_pat
     clock.t += 7201
     await m.tick()
     assert abs(float(m.store.get("follow_up:555")) - (clock() + 3600)) < 60
+
+
+async def test_a_minor_learnt_while_writing_by_instruction_stops_the_send(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+
+    def answer(msgs):
+        if "owner's instruction" in msgs[1]["content"]:
+            m.store.update(555, minor=1)
+            return {"action": "reply", "messages": ["в субботу в 18, жду тебя"]}
+        return {"action": "wait"}
+    m.llm.reply = answer
+    await m.answer_card(card, "суббота в 18")
+    assert "жду тебя" not in " ".join(people.sent_texts(555)) and "меньше 18" in inbox[-1]
+
+
+async def test_finishing_an_old_send_never_removes_a_newer_queued_answer(tmp_path):
+    from test_conversation import ConversationStore
+    store = ConversationStore(":memory:")
+    store.add_person(PersonRef(1, None, "a"), "b", "", 0.0)
+    store.set_outbox(1, 5, ["новый ответ владельца"], 0.0, approved=True, owner_text=True)
+    store.commit_send(1, 77, 1.0, 5, [], ["старый hold"])  # the old series ends after the new one was queued
+    assert store.outbox_row(1) == (5, ["новый ответ владельца"])
+
+
+@pytest.mark.parametrize("hold", ["давай в шесть у парка", "гляну, может в кафе", "давай около метро"])
+async def test_holding_replies_with_times_or_places_in_words_are_not_sent(tmp_path, hold):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path, hold=hold)
+    clock.t += 31
+    await m.tick()
+    assert people.sent_texts(555) == []
+
+
+async def test_switching_to_approve_keeps_the_meeting_card(tmp_path):
+    m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
+    await m.command("chat_mode", "approve")
+    clock.t += 31
+    await m.tick()
+    m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
+                                if "owner's instruction" in msgs[1]["content"] else {"action": "wait"})
+    await m.answer_card(card, "суббота в 18")
+    assert people.sent_texts(555) == ["в субботу в 18?"]
