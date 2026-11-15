@@ -1682,11 +1682,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if not set(texts) <= set(sent):  # the rest of these messages has not gone out yet
             self.store.set(f"facts:{user_id}", json.dumps({**pending, "sent": sent}, ensure_ascii=False))
             return []
-        self.store.unset(f"facts:{user_id}")
         said = self._said(user_id)
         added = [f for f in pending.get("facts") or [] if isinstance(f, str) and f not in said]
-        if added:
+        if added:  # kept first, the pending entry dropped after: a crash in between repeats this, never loses it
             self.store.set(f"said:{user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
+        self.store.unset(f"facts:{user_id}")
         return added
 
     async def _report_facts(self, person: Person, added: list[str]) -> None:

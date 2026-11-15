@@ -516,3 +516,19 @@ async def test_a_crash_right_after_a_send_keeps_its_fact_progress(tmp_path):
     m.store.commit_send = real
     assert people.sent_texts(555) == ["у меня"]
     assert json.loads(m.store.get("facts:555"))["sent"] == ["у меня"]
+
+
+
+def test_a_crash_while_keeping_facts_never_loses_them(tmp_path):
+    m, people, inbox, clock = make(tmp_path)
+    m._pend_facts(555, {"new_facts": ["есть машина"]}, ["а"])
+    real = m.store.unset
+
+    def crash(key):
+        raise RuntimeError("killed")
+    m.store.unset = crash
+    with pytest.raises(RuntimeError):
+        m._facts_sent(555, "а")
+    m.store.unset = real
+    assert m._said(555) == ["есть машина"]
+    assert m._facts_sent(555, "а") == [] and m.store.get("facts:555") is None  # the retry finishes, no duplicate
