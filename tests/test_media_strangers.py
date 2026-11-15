@@ -2030,7 +2030,7 @@ def test_imports_are_taken_for_code(text):
     assert classify_outgoing(text) == "assistant"
 
 
-async def test_no_holding_reply_is_promised_right_before_the_night_grace_ends(tmp_path):
+async def test_a_holding_reply_promised_at_the_end_of_the_night_grace_still_goes_out(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True,
                                    timezone="Europe/Moscow", late_hours="23:30-01:30", quiet_hours="01:30-09:00")
     await match(m)
@@ -2041,7 +2041,15 @@ async def test_no_holding_reply_is_promised_right_before_the_night_grace_ends(tm
     m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["давай, гляну расписание и напишу"],
                    "slots": "суббота", "messages": ["давай в субботу?"]}
     await answered(m, people, clock)
-    assert m.llm.calls and not any("гляну расписание" in n for n in inbox)
+    assert any("гляну расписание" in n for n in inbox)  # the owner is told it goes out
+    clock.t = at_moscow(3, 2)  # the notification took a while: past the grace
+    for _ in range(2):
+        await m.tick()
+        clock.t += 61
+    assert people.sent_texts(555)[-1] == "давай, гляну расписание и напишу"
+    people.incoming(555, "ок")
+    await answered(m, people, clock)
+    assert people.sent_texts(555)[-1] == "давай, гляну расписание и напишу"  # the rest waits for the morning
 
 
 def test_a_quiet_window_starting_in_a_skipped_hour_starts_at_the_clock_change(tmp_path):
@@ -2052,3 +2060,18 @@ def test_a_quiet_window_starting_in_a_skipped_hour_starts_at_the_clock_change(tm
     jump = datetime(2027, 3, 28, 3, 0, tzinfo=tz).timestamp()  # 02:00 CET jumps to 03:00 CEST
     assert m._minutes_into("02:30-09:00", jump + 300) == 5
     assert m._minutes_into("01:30-09:00", jump + 300) == 35
+
+
+@pytest.mark.parametrize("zone,day,hhmm,expect_utc", [
+    ("Europe/Berlin", (2026, 10, 25), (2, 45), "2026-10-25T00:45"),  # repeated hour: the first 02:45
+    ("Europe/Berlin", (2027, 3, 28), (2, 30), "2027-03-28T01:00"),  # skipped hour: the jump
+    ("Australia/Lord_Howe", (2026, 4, 5), (1, 45), "2026-04-04T14:45"),  # half-hour autumn change
+    ("Asia/Kolkata", (2027, 1, 15), (1, 30), "2027-01-14T20:00"),  # no clock changes, +05:30
+])
+def test_the_first_instant_of_a_wall_time(zone, day, hhmm, expect_utc):
+    from datetime import UTC, date, datetime
+    from zoneinfo import ZoneInfo
+
+    from doppelgram.conversation import _first_instant_at
+    ts = _first_instant_at(date(*day), *hhmm, ZoneInfo(zone))
+    assert datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M") == expect_utc

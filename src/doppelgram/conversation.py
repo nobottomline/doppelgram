@@ -590,13 +590,17 @@ def _first_instant_at(day, hour: int, minute: int, tz) -> float:
     """The first moment the wall clock in `tz` shows hour:minute on `day`; if a spring clock change skips
     that time, the moment the clock jumps past it."""
     wanted = (day, hour, minute)
+    first = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=0).timestamp()
+    local = datetime.fromtimestamp(first, tz)
+    if (local.date(), local.hour, local.minute) == wanted:
+        return first  # the time exists; fold=0 is its first occurrence when an autumn change repeats it
 
-    def reached(t: float) -> bool:
+    def reached(t: float) -> bool:  # monotonic here: a skipped time is never next to a repeated one
         local = datetime.fromtimestamp(t, tz)
         return (local.date(), local.hour, local.minute) >= wanted
 
     lo = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=1).timestamp() - 7200
-    hi = datetime(day.year, day.month, day.day, hour, minute, tzinfo=tz, fold=0).timestamp() + 7200
+    hi = first + 7200
     while hi - lo > 1:
         mid = (lo + hi) / 2
         lo, hi = (lo, mid) if reached(mid) else (mid, hi)
@@ -1015,12 +1019,15 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         if self._night_end() is None:
             return False
         now = self.clock()
-        if self._quiet_now() is not None:
+        mark = self.store.get(f"night_ok:{user_id}")
+        fresh = bool(mark) and now - float(mark) <= 900
+        if self._quiet_now() is not None and not (fresh and self.store.get(f"hold:{user_id}")):
+            # A holding reply the owner was told about still goes out with its fresh marker, even if it
+            # misses the end of the grace by a minute or two; anything else prepared waits for the morning.
             into = self._minutes_into(self.cfg.quiet_hours, now)
             if into is None or into > self.cfg.night_grace_min:
-                return True  # deep in the night: whatever was prepared waits for the morning
-        mark = self.store.get(f"night_ok:{user_id}")
-        return not (mark and now - float(mark) <= 900)
+                return True
+        return not fresh
 
     def _minutes_into(self, window: str, ts: float) -> float | None:
         """Real minutes since the window began (counted in absolute time, so a clock change does not shift it)."""
@@ -1317,8 +1324,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         hold = [t for t in hold if not _WHEN_WHERE_RE.search(t)]
         send_hold = bool(hold) and self.mode == "auto"
         night = self._night_end() is not None
-        if send_hold and night and (not self._night_lively(history, self.clock())
-                                    or self._night_grace_left(self.clock()) < 60):
+        if send_hold and night and not self._night_lively(history, self.clock()):
             send_hold = False  # nobody is waiting at this hour: do not promise the owner a reply that will not go out
         await self._escalate(person, history, upto, category, ESCALATIONS[category], [t for t in draft if t],
                              written_at=now, kind="meeting", slots=slots, hold=hold if send_hold else [])
@@ -1326,8 +1332,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             # The agent's own words, checked like any of its messages; the marker lets them out of a paused chat.
             self.store.set(f"hold:{person.user_id}", "1")
             delay = self._reply_delay(history)
-            if night:  # a lively chat at night: the holding reply goes out within minutes, before the grace ends
-                delay = max(min(delay, 180.0, self._night_grace_left(self.clock()) - 45), 1.0)
+            if night:  # a lively chat at night: the holding reply goes out within minutes
+                delay = min(delay, 180.0)
                 self.store.set(f"night_ok:{person.user_id}", str(now + delay))
             self.store.set_outbox(person.user_id, upto, hold, now + delay, keep_cards=True)
             self.wake.set()
