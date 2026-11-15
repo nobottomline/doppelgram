@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 from test_conversation import make, match
+from test_supervisor import setup
+
+from doppelgram.supervisor import Supervisor
 
 
 @pytest.mark.parametrize("age", range(10, 19))
@@ -89,3 +94,29 @@ async def test_age_fillers_do_not_match_arbitrary_words_or_numeric_fragments(tmp
     people.incoming(555, text)
     await m._compose(m.store.person(555), await people.history(555, 20))
     assert f"Маша: {text}" in m.llm.calls[-1][1]["content"]
+
+
+@pytest.mark.parametrize("age_mode,hide_numbers,visible_age", [
+    ("keep", True, ""),  # the default bot privacy settings
+    ("keep", False, " 18"), ("18", False, " 18"), ("18", True, ""), ("hide", True, ""),
+])
+async def test_real_bot_privacy_wiring_keeps_private_history_normalization_independent(
+        tmp_path, age_mode, hide_numbers, visible_age):
+    sup, agents, bots, bot_inbox, bot_clock = setup(tmp_path)
+    m, people, inbox, clock = make(tmp_path)
+    agents["арт"].b = replace(agents["арт"].b, age_in_prompt=age_mode, hide_numbers_10_18=hide_numbers)
+    Supervisor(agents, bot_inbox, conversations=m)
+    await match(m)
+    m.store.update(555, bot="арт", card="мне если что 16", memory="сказала: мне кстати 17")
+    original = "мне если что 16, у меня 17 пластинок"
+    people.incoming(555, original)
+    people.owner_writes(555, "мне если что 17")
+
+    await m._compose(m.store.person(555), await people.history(555, 20))
+
+    prompt = m.llm.calls[-1][1]["content"]
+    assert f"Their dating profile: мне если что{visible_age}\n\n" in prompt
+    assert f"## Your notes about this person\nсказала: мне кстати{visible_age}\n\n" in prompt
+    assert "Маша: мне если что 18, у меня 17 пластинок" in prompt
+    assert "owner: мне если что 17" in prompt
+    assert people.chats[555][0].text == original
