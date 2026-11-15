@@ -1775,7 +1775,11 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             if _has_smiley(text):
                 seen = (recent + out)[-window:] if window else []
                 if not math.isfinite(gap) or any(_has_smiley(t) for t in seen):
-                    text = _strip_smiley(text)
+                    stripped = _strip_smiley(text)
+                    # Taming never changes what the outgoing checks see (a contact, a list): then it stays as is.
+                    if classify_outgoing(stripped, intimacy=self.intimacy) == classify_outgoing(
+                            text, intimacy=self.intimacy):
+                        text = stripped
             if text:
                 out.append(text)
         return out

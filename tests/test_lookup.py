@@ -707,3 +707,11 @@ def test_taking_smileys_off_never_corrupts_the_text():
         assert out.count("(") == out.count(")") == text.count("("), text
         assert re.findall(r"[^\W\d_]+", out) == re.findall(r"[^\W\d_]+", text), text
         assert not re.search(doubled, out) or re.search(doubled, text), text
+
+
+
+def test_taming_never_changes_what_the_outgoing_checks_see(tmp_path):
+    from doppelgram.conversation import classify_outgoing
+    m = tamer(tmp_path, ["привет", "ну да"])
+    for text in ("мой номер 8 (999)) 123-45-67", "а) :) люблю горы\nб) :) люблю море", "1) да)\n2) нет)"):
+        assert classify_outgoing(m._tame([text], [])[0]) == classify_outgoing(text) is not None
