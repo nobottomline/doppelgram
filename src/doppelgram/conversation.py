@@ -346,20 +346,44 @@ _LOOKUP_RULE = (' If a good reply depends on it and asking would sound odd (some
 DEFAULT_SMILEY_RATE = 0.2  # without style examples: about one message in five
 
 
+def _smiley_spans(text: str) -> list[tuple[int, int]]:
+    """Where the ")" smileys are: runs of closing brackets that close nothing ("ахах)", "ну да))"), with an
+    emoticon's eyes (":)", ";-)"). A bracket that closes "(" stays, and so does a list marker ("1)", "а)"), which
+    the outgoing check must still see."""
+    open_count, marks = 0, []
+    for i, ch in enumerate(text):
+        if ch == "(":
+            open_count += 1
+        elif ch == ")":
+            if open_count:
+                open_count -= 1
+                continue
+            line = text[text.rfind("\n", 0, i) + 1:i]
+            if not re.fullmatch(r"\s*(?:\d{1,2}|[^\W\d_])", line):  # "1)", "а)"; "да)" is a smiley
+                marks.append(i)
+    spans: list[tuple[int, int]] = []
+    for i in marks:
+        if spans and spans[-1][1] == i:
+            spans[-1] = (spans[-1][0], i + 1)
+        else:
+            eyes = re.search(r"[:;=]-?$", text[:i])
+            spans.append((eyes.start() if eyes else i, i + 1))
+    return spans
+
+
 def _has_smiley(text: str) -> bool:
-    """A ")" smiley: a closing bracket that closes nothing ("ахах)", "ну да))", ":)")."""
-    return text.count(")") > text.count("(")
+    return bool(_smiley_spans(text))
 
 
 def _strip_smiley(text: str) -> str:
     """Take the smileys off; one in the middle often ends a phrase ("всё не уместится) учусь"): a comma then."""
-    t = re.sub(r"\s*[:;=]-?\)+", "", text)
-    if "(" not in t:
-        t = re.sub(r"\)+\s+(?=\S)", ", ", t).replace(")", "")
-        t = re.sub(r"([,.!?…])\s*,\s", r"\1 ", t)  # "да?) ну" -> "да? ну", not "да?, ну"
-    else:
-        while t.count(")") > t.count("(") and t.rstrip().endswith(")"):
-            t = t.rstrip()[:-1]
+    t = text
+    for start, end in reversed(_smiley_spans(text)):
+        left, right = t[:start].rstrip(" \t"), t[end:].lstrip(" \t")
+        if left and right and not right.startswith("\n"):
+            t = left + (" " if left[-1] in ",.!?…:;" else ", ") + right
+        else:
+            t = left + right
     return re.sub(r"[ \t]{2,}", " ", t).strip()
 
 

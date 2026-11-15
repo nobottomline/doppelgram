@@ -618,6 +618,18 @@ def test_smileys_are_found_and_taken_off_cleanly():
     assert _strip_smiley("ну да))") == "ну да" and _strip_smiley("ок :)") == "ок"
     assert _strip_smiley("в субботу (если получится))") == "в субботу (если получится)"
     assert _strip_smiley(")") == ""
+    assert _strip_smiley("да) читаю (редко)") == "да, читаю (редко)"
+    assert _strip_smiley("привет :)как дела?") == "привет, как дела?"
+    assert _strip_smiley("1) люблю горы\n2) люблю море") == "1) люблю горы\n2) люблю море"
+    assert not _has_smiley("1) люблю горы\n2) люблю море") and not _has_smiley("а) да")
+    assert _has_smiley("да)") and _strip_smiley("да)) ну ладно") == "да, ну ладно"
+
+
+def test_a_list_is_still_caught_after_taming(tmp_path):
+    from doppelgram.conversation import classify_outgoing
+    m = tamer(tmp_path, ["привет", "ну да"])
+    tamed = m._tame(["1) люблю горы\n2) люблю море"], [])
+    assert classify_outgoing(tamed[0]) == "assistant"
 
 
 def tamer(tmp_path, style_lines):
