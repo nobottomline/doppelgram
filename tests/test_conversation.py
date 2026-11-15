@@ -177,17 +177,16 @@ async def test_ai_question_is_escalated_without_the_model_and_pauses_the_chat(tm
 
 @pytest.mark.parametrize("text,category", [
     ("давай встретимся в субботу", "meeting"), ("скинь на карту 500", None), ("вот мой инст @masha_travel", None),
-    ("мне 16 если что", "minor"), ("пришли нюдс", "explicit"), ("может созвонимся вечером?", "call"),
+    ("пришли нюдс", "explicit"), ("может созвонимся вечером?", "call"),
 ])
 def test_sensitive_topics_are_detected(text, category):
     assert classify_incoming(text, None) == category
 
 
-def test_with_intimacy_allowed_only_minors_and_graphic_go_to_the_owner():
+def test_with_intimacy_allowed_graphic_content_still_goes_to_the_owner():
     from doppelgram.conversation import classify_outgoing
     assert classify_incoming("ты такая милая, хочу тебя", None, intimacy=True) is None
     assert classify_incoming("пришли нюдс", None, intimacy=True) == "explicit"  # no photos, ever
-    assert classify_incoming("мне 16 если что", None, intimacy=True) == "minor"
     assert classify_outgoing("хочу тебя", intimacy=True) is None
     assert classify_outgoing("интим", intimacy=False) == "explicit"
     assert classify_outgoing("я не сижу в инсте") is None  # an answer, not a contact
@@ -1000,7 +999,7 @@ async def test_intimacy_is_an_opt_in_from_config_or_telegram(tmp_path):
     clock.t += 11
     await m.tick()
     system = m.llm.calls[-1][0]["content"]
-    assert "Intimacy is allowed" in system and "under 18 (always" in system
+    assert "Intimacy is allowed" in system
     from doppelgram.control import parse_owner
     assert parse_owner("/chat интим вкл").arg == "intimacy:on"
 

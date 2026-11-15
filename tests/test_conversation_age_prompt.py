@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 from test_conversation import make, match
-from test_media_strangers import FakeTranscriber, answered
 
 
 @pytest.mark.parametrize("age", range(10, 19))
@@ -58,66 +57,3 @@ async def test_profile_notes_and_stranger_classifier_use_the_same_normalization(
     assert "Bio: мне 18, люблю музыку" in prompt
     assert "привет, мне 18" in prompt
     assert "16" not in prompt and "17" not in prompt
-
-
-@pytest.mark.parametrize("age", range(10, 18))
-async def test_new_minor_declaration_still_escalates_before_the_provider(tmp_path, age):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    original = f"мне {age}"
-    people.incoming(555, original)
-    await answered(m, people, clock)
-    assert m.llm.calls == [] and people.sent_texts(555) == []
-    assert "несовершеннолетний" in inbox[-1] and original in inbox[-1]
-
-
-@pytest.mark.parametrize("age", [16, 18])
-async def test_transcripts_keep_the_raw_minor_gate_before_prompt_normalization(tmp_path, age):
-    m, people, inbox, clock = make(tmp_path, write_first=False)
-    await match(m)
-    m.transcriber = FakeTranscriber(f"мне {age}, люблю музыку")
-    people.incoming(555, "", "voice", duration=2, blob=b"ogg")
-    await answered(m, people, clock)
-    if age < 18:
-        assert m.llm.calls == [] and "несовершеннолетний" in inbox[-1]
-    else:
-        assert "мне 18, люблю музыку" in m.llm.calls[-1][1]["content"]
-    assert people.sent_texts(555) == []
-
-
-async def test_minor_flag_survives_owner_resume_and_history_truncation(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True, history_messages=1)
-    await match(m)
-    people.incoming(555, "мне 16")
-    await answered(m, people, clock)
-    assert m.store.person(555).minor
-    await m.answer_card(9000 + len(inbox), "пропуск")
-    people.incoming(555, "привет")
-    await answered(m, people, clock)
-    assert "Intimacy is allowed" not in m.llm.calls[-1][0]["content"]
-    assert "under 18: keep it friendly" in m.llm.calls[-1][1]["content"]
-
-
-@pytest.mark.parametrize("first", ["давай встретимся", "может созвонимся?"])
-async def test_minor_declaration_takes_priority_over_meeting_drafts_in_a_burst(tmp_path, first):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, first)
-    people.incoming(555, "мне 16")
-    await answered(m, people, clock)
-    assert m.store.person(555).minor
-    assert m.llm.calls == [] and people.sent_texts(555) == []
-    assert "несовершеннолетний" in inbox[-1]
-
-
-async def test_preexisting_minor_history_is_remembered_before_normalization(tmp_path):
-    m, people, inbox, clock = make(tmp_path, write_first=False, intimacy=True)
-    await match(m)
-    old = people.incoming(555, "мне 16")
-    m.store.update(555, handled_upto=old)
-    people.incoming(555, "привет")
-    await answered(m, people, clock)
-    assert m.store.person(555).minor
-    assert "Intimacy is allowed" not in m.llm.calls[-1][0]["content"]
-    prompt = m.llm.calls[-1][1]["content"]
-    assert "мне 18" in prompt and "under 18: keep it friendly" in prompt

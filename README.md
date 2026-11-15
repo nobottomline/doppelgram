@@ -29,7 +29,7 @@ You bring your own API key.
 
 ```
 Telegram updates ──wake──▶ per-bot agent: re-read the bot chat → current card (photo, caption, keyboard)
-                              │  hard rules first: age gate, blocked buttons, limits, match notices
+                              │  hard rules first: blocked buttons, limits, match notices
                               ▼
             vision LLM (card + your taste text, rules, reference photos, past decisions) → JSON decision
                               │  validated against the real buttons; anything else → "ask the owner"
@@ -140,7 +140,7 @@ you send it with «ок».
 links (a phone number is not needed in Telegram); a call proposal comes to you as a draft, like a meeting.
 With `intimacy` on (the default, for adult owners; `/chat интим выкл`) the agent may flirt and talk about
 intimate topics when the person clearly wants it too, never pressures, never asks for photos, and hands
-graphic sexting to you; off, such topics come to you. Any sign that the person is under 18 always goes to you.
+graphic sexting to you; off, such topics come to you.
 
 **Stickers, photos, voice.** Stickers are read as their emoji. Photos, and a frame of gifs, videos and
 video notes, are shown to the model (`see_photos`). Voice messages and video notes are transcribed with an
@@ -228,10 +228,10 @@ as `мне 18` in the LLM prompt, including chat history, understood voice messa
 The rest of the message and the owner's messages stay unchanged. This rule is always applied to private
 conversations, independently of the bots' `age_in_prompt` and `hide_numbers_10_18` settings. Profile and note
 copies also receive this normalization before the existing bot privacy settings. Telegram messages are never
-edited. Local checks still read the original text: a new declaration under 18 goes to the owner before any
-conversation-model request, and existing restrictions on intimacy remain in force.
-Only the boolean minor flag is retained, so resuming a chat or truncating its history cannot lift those
-restrictions; the declared age itself is not stored.
+edited. Ages do not classify people or trigger automatic skips, escalations, or draft cancellation.
+Older `min_age` and `skip_buttons` configuration entries are accepted and ignored. On opening an existing
+conversation database, the retired classification column and timestamps are removed; chat ownership,
+paused conversations, owner cards, and queued messages are preserved.
 
 The leading block of `#` lines in `taste.md`, `about-me.md`, `style.md` and the task files is a comment the
 model never sees; headings and hashtags further down are kept. The `taste`, `about-me` and `style` templates

@@ -16,8 +16,8 @@ from doppelgram.supervisor import Supervisor
 from doppelgram.taste import TasteProfile
 
 LEO = dict(deny_buttons=["💌", "📹", "⭐", "VIP"], match_pattern="Начинай общаться",
-           min_age=18, age_pattern=r"^[^,\n]+,\s*(\d{1,2}),", skip_buttons=["👎"])
-BIB = dict(deny_buttons=["💌", "💘", "⚠️"], min_age=18, age_pattern=r"(\d{1,2})\s*лет", skip_buttons=["Назад"])
+           age_pattern=r"^[^,\n]+,\s*(\d{1,2}),")
+BIB = dict(deny_buttons=["💌", "💘", "⚠️"], age_pattern=r"(\d{1,2})\s*лет")
 
 
 def prompt_text(call) -> str:
@@ -58,35 +58,14 @@ async def test_leomatch_swipes_with_reply_keyboard_and_records_match(tmp_path):
     agent, clock = build(tmp_path, bot, leo_decide, LEO)
     await run(agent, 8)
     assert bot.reactions == [("Аня", "👎"), ("Маша", "❤️"), ("Лиза", "👎"), ("Катя", "👎")]
-    # Лиза is 17: skipped by the age rule, the model never saw her card.
-    assert not any("Лиза, 17" in prompt_text(c).split("## Current bot message")[1] for c in agent.llm.calls)
+    # Every profile is rated normally, regardless of numbers in its caption.
+    assert any("Лиза," in prompt_text(c).split("## Current bot message")[1] for c in agent.llm.calls)
     # The keyboard is offered with blocked paid/message buttons.
     first = prompt_text(agent.llm.calls[0])
     assert '"❤️"' in first and '"💌 / 📹"  [blocked]' in first
     # The match was recorded and the owner was told how to reach the person.
     assert agent.store.matches()[0]["links"] == ["https://t.me/masha_example"]
     assert any("Взаимная симпатия" in t and "masha_example" in t for t, _ in bot.owner_inbox)
-
-
-async def test_age_gate_does_not_loop_on_the_same_card(tmp_path):
-    bot = FakeLeomatch(cards=[("Лиза", 16)])
-    agent, clock = build(tmp_path, bot, leo_decide, LEO)
-    await run(agent, 1)
-    original = bot.send_to_bot
-
-    async def no_progress(text):
-        bot.sent.append(text)
-
-    bot.send_to_bot = no_progress
-    await run(agent, 1)
-    assert bot.sent[-1] == "👎"
-    # The bot shows the same profile again as a new message: never loop, ask the owner.
-    card = next(m for m in reversed(bot.messages) if m.has_image)
-    bot.messages.append(replace(card, id=bot._id()))
-    await run(agent, 1)
-    assert not agent.running
-    assert "16 &lt; 18" in bot.owner_inbox[-1][0]
-    bot.send_to_bot = original
 
 
 async def test_bibinto_rates_with_keyboard_sent_before_the_picture(tmp_path):
@@ -243,13 +222,6 @@ async def test_oversized_photo_caption_is_not_a_command(tmp_path):
     assert bot.ratings == [] and "до 10 МБ" in bot.owner_inbox[-1][0]
 
 
-async def test_age_gate_respects_the_hourly_cap(tmp_path):
-    bot = FakeLeomatch(cards=[("Лиза", 16), ("Оля", 15), ("Катя", 14)])
-    agent, clock = build(tmp_path, bot, leo_decide, dict(LEO, max_actions_per_hour=2))  # /start + one skip
-    await run(agent, 6)
-    assert len(bot.reactions) == 1
-
-
 async def test_restriction_while_notifying_trips_the_breaker(tmp_path):
     from doppelgram.transport import AccountRestricted
 
@@ -310,7 +282,7 @@ async def test_changed_separate_text_with_same_picture_is_decided(tmp_path):
                                                ("keep", "Аня, 21, Москва", None)])
 async def test_ages_sent_to_the_model_follow_the_setting(tmp_path, mode, shown, hidden):
     bot = FakeLeomatch()
-    agent, clock = build(tmp_path, bot, leo_decide, dict(LEO, min_age=0, age_in_prompt=mode))
+    agent, clock = build(tmp_path, bot, leo_decide, dict(LEO, age_in_prompt=mode))
     await run(agent, 4)  # /start, Аня, Маша (like → match), next card (the match is recorded)
     second = prompt_text(agent.llm.calls[1])  # Маша's card, with Аня's card in the history
     current = second.split("## Current bot message")[1]
@@ -331,7 +303,7 @@ async def test_profiles_are_not_stored(tmp_path):
         r.update(reason="Маша, 23 года, стройная", description="девушка 23 лет в горах")
         return r
 
-    agent, clock = build(tmp_path, bot, decide, dict(LEO, min_age=0))
+    agent, clock = build(tmp_path, bot, decide, LEO)
     await run(agent, 6)
     dump = "\n".join(str(row) for table in ("kv", "actions", "examples", "matches", "handled")
                      for row in agent.store.db.execute(f"SELECT * FROM {table}"))
@@ -401,7 +373,7 @@ async def test_pending_card_and_bot_answers_are_stored_without_personal_text(tmp
     agent, clock = build(tmp_path, bot, lambda t, i: {
         "action": "click", "button_id": "k0c0", "confidence": 0.9, "reason": "Аня, 21, классная",
         "description": "Аня, 21 год, блондинка из Москвы", "traits": {"волосы": "светлые", "имя": "Аня"}},
-        dict(LEO, min_age=0), mode="supervised")
+        LEO, mode="supervised")
     await run(agent, 2)
     import json
 
