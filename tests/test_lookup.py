@@ -306,7 +306,7 @@ async def test_eval_checks_what_the_system_did_and_asks_the_judge(tmp_path):
     assert by["inject_model"].ok and by["inject_model"].sent == ["не понял, ты о чём"]
     assert by["bot_direct"].ok and by["bot_direct"].went_to_owner and by["bot_direct"].judge_ok is None
     assert by["hello_wave"].sent == ["не понял, ты о чём"]
-    assert lines[-1].startswith("\nИтог: 3/3")
+    assert any(line.startswith("\nИтог: 3/3") for line in lines) and lines[-1].startswith("Сообщений: 2")
     assert len({s.name for s in SCENARIOS}) == len(SCENARIOS)
     with pytest.raises(ValueError):
         await evaluate(m.cfg, llm, only=["nope"], out=lines.append)
@@ -751,3 +751,83 @@ async def test_the_judge_sees_the_owners_goal_and_intimacy_setting(tmp_path):
         await evaluate(m.cfg, FakeLLM(agent), only=["wants_casual"], out=lambda s: None)
     assert "Цель: серьёзные отношения" in seen[0]
     assert "Intimacy allowed: yes" in seen[0] and "Intimacy allowed: no" in seen[1]
+
+
+
+def test_a_sticker_alone_is_a_greeting_from_a_stranger():
+    from doppelgram.conversation import _is_greeting
+    assert _is_greeting("[стикер 😺 1]") and _is_greeting("[стикер]") and _is_greeting("[стикер 👋] привет")
+    assert not _is_greeting("[стикер 😺] слушай, а ты с курса?")
+
+
+
+async def own_meeting_idea(tmp_path, incoming, hold):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, incoming)
+    m.llm.reply = {"action": "escalate", "category": "meeting", "hold": [hold], "slots": "суббота",
+                   "messages": ["давай в субботу кофе выпьем?"]}
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    return people.sent_texts(555), inbox
+
+
+async def test_no_holding_reply_when_the_meeting_is_the_agents_own_idea(tmp_path):
+    sent, inbox = await own_meeting_idea(tmp_path, "а какие приложения делаешь?", "давай, гляну расписание и напишу")
+    assert "давай, гляну расписание и напишу" not in sent and any("давай в субботу кофе выпьем?" in n for n in inbox)
+
+
+async def test_on_the_agents_own_idea_they_still_get_a_plain_answer(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а какие приложения делаешь?")
+
+    def reply(msgs):
+        if "proposal to meet is waiting for the owner" in msgs[1]["content"]:
+            return {"action": "reply", "messages": ["разные, под свои идеи"]}
+        return {"action": "escalate", "category": "meeting", "hold": ["давай, гляну расписание и напишу"],
+                "slots": "суббота", "messages": ["давай в субботу кофе выпьем?"]}
+    m.llm.reply = reply
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == ["разные, под свои идеи"]
+    assert any("давай в субботу кофе выпьем?" in n for n in inbox)
+
+
+async def test_a_normal_answer_goes_out_while_the_owner_decides_on_the_agents_idea(tmp_path):
+    sent, inbox = await own_meeting_idea(tmp_path, "а какие приложения делаешь?", "разные, под свои идеи")
+    assert sent == ["разные, под свои идеи"]
+
+
+async def test_a_holding_reply_still_answers_their_invitation(tmp_path):
+    sent, inbox = await own_meeting_idea(tmp_path, "давай встретимся?", "давай, гляну расписание и напишу")
+    assert sent == ["давай, гляну расписание и напишу"]
+
+
+
+@pytest.mark.parametrize("text", ["ты бот?", "слушай, а ты случайно не бот?", "ты что, нейросеть?", "это chatgpt?",
+                                  "я с ботом общаюсь?", "за тебя бот отвечает?", "отвечаешь как нейросеть",
+                                  "это автоответчик?", "ты ии?", "Ты БОТ?", "ты точно не робот?", "ты бот что ли"])
+def test_questions_about_who_is_writing_go_to_the_owner(text):
+    from doppelgram.conversation import classify_incoming
+    assert classify_incoming(text, None) == "ai_question"
+
+
+@pytest.mark.parametrize("text", ["ты с ИИ делаешь приложения?", "ты с нейросетями работаешь?", "ии сейчас везде",
+                                  "я делаю ботов для телеграма", "ты ботаник?", "у тебя есть ai приложения?"])
+def test_ai_as_a_topic_is_ordinary_talk(text):
+    from doppelgram.conversation import classify_incoming
+    assert classify_incoming(text, None) is None
+
+
+@pytest.mark.parametrize("text,claim", [("я не бот, честно", True), ("я живой человек", True), ("я человек", True),
+                                        ("я же не нейросеть", True), ("вайбкожу с помощью ИИ", False),
+                                        ("делаю приложения с нейросетями", False), ("я человек простой", False),
+                                        ("я реально устал", False), ("пишу ботов иногда", False)])
+def test_the_agent_never_says_what_it_is_but_may_talk_about_ai(text, claim):
+    from doppelgram.conversation import classify_outgoing
+    assert (classify_outgoing(text) == "ai_question") is claim

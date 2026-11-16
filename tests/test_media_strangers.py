@@ -45,14 +45,24 @@ async def answered(m, people, clock, user=555):
 
 
 # ------------------------------------------------------------------ media
-async def test_a_sticker_is_read_as_its_emoji(tmp_path):
+async def test_a_sticker_is_read_as_its_emoji_when_it_cannot_be_seen(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
     await match(m)
     people.incoming(555, "", "sticker", emoji="😂")
     await answered(m, people, clock)
     text, images = prompt_of(m)
     assert "[стикер 😂]" in text and not images and "Черновик" in inbox[-1]
-    assert people.downloads == []  # a sticker is never downloaded
+
+
+async def test_a_sticker_is_shown_so_its_words_are_read(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    people.incoming(555, "", "sticker", emoji="😺", blob=png())  # a cat saying "привет"
+    await answered(m, people, clock)
+    text, images = prompt_of(m)
+    assert "[стикер 😺 1]" in text and len(images) == 1
+    assert "Never comment on the sticker itself" in m.llm.calls[-1][0]["content"]
+    assert "the sticker itself: read what it says" in text
 
 
 async def test_a_photo_is_shown_to_the_model(tmp_path):
@@ -68,12 +78,27 @@ async def test_a_photo_is_shown_to_the_model(tmp_path):
 async def test_a_gif_and_a_video_show_a_preview_frame(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
     await match(m)
-    people.incoming(555, "", "gif", blob=png())
-    people.incoming(555, "", "video", duration=12, blob=png())
+    gif = people.incoming(555, "", "gif", blob=png())
+    video = people.incoming(555, "", "video", duration=12, blob=png())
     await answered(m, people, clock)
     text, images = prompt_of(m)
     assert "[гифка" in text and "[видео" in text and len(images) == 2
-    assert all(thumb for _, thumb in people.downloads)
+    assert (gif, True) in people.downloads and (video, False) in people.downloads  # the file itself, for frames
+
+
+async def test_a_video_that_cannot_be_decoded_falls_back_to_its_thumbnail(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    video = people.incoming(555, "", "video", duration=12, blob=b"not a video")
+    real = people.download
+
+    async def thumb_ok(user_id, msg_id, *, thumb=False):
+        await real(user_id, msg_id, thumb=thumb)
+        return png() if thumb else b"not a video"
+    people.download = thumb_ok
+    await answered(m, people, clock)
+    text, images = prompt_of(m)
+    assert "[видео 1]" in text and len(images) == 1 and (video, True) in people.downloads
 
 
 async def test_photos_can_be_switched_off(tmp_path):
@@ -346,7 +371,7 @@ def test_telegram_media_kinds_and_stranger_filter():
 def test_chat_message_defaults_are_backward_compatible():
     m = ChatMessage(1, False, "привет", 0.0)
     assert (m.media_kind, m.emoji, m.duration) == (None, "", 0.0)
-    assert ConversationManager.MAX_IMAGES == 3
+    assert ConversationManager.MAX_IMAGES == 4
 
 
 async def test_a_strangers_burst_is_waited_out_before_triage(tmp_path):
@@ -2115,3 +2140,45 @@ def test_an_unknown_hold_marker_is_never_trusted_and_never_crashes(tmp_path, mar
     m.store.set("hold:555", mark)
     m.store.set_outbox(555, 1, ["ладно"], clock.t)
     assert m._hold_queued(555) is False
+
+
+
+def tiny_video(seconds=2.0, with_audio=False) -> bytes:
+    """A real little mp4: red for the first half, blue for the second."""
+    import av
+    from PIL import Image
+    buf = io.BytesIO()
+    with av.open(buf, "w", format="mp4") as out:
+        stream = out.add_stream("mpeg4", rate=10)
+        stream.width = stream.height = 64
+        stream.pix_fmt = "yuv420p"
+        for i in range(int(seconds * 10)):
+            color = (220, 30, 30) if i < seconds * 5 else (30, 30, 220)
+            frame = av.VideoFrame.from_image(Image.new("RGB", (64, 64), color))
+            for packet in stream.encode(frame):
+                out.mux(packet)
+        for packet in stream.encode():
+            out.mux(packet)
+    return buf.getvalue()
+
+
+def test_frames_are_taken_across_a_video():
+    from PIL import Image
+
+    from doppelgram.media import video_frames
+    frames = video_frames(tiny_video(), 2)
+    assert len(frames) == 2
+    first, second = (Image.open(io.BytesIO(f)).convert("RGB").getpixel((32, 32)) for f in frames)
+    assert first[0] > first[2] and second[2] > second[0]  # one from the red half, one from the blue
+    assert video_frames(b"not a video", 2) == []
+
+
+async def test_a_video_note_is_seen_in_frames_and_heard_from_one_download(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    m.transcriber = FakeTranscriber("привет, это я")
+    await match(m)
+    note = people.incoming(555, "", "video_note", duration=2, blob=tiny_video())
+    await answered(m, people, clock)
+    text, images = prompt_of(m)
+    assert "[кружок 1-2] привет, это я" in text and len(images) == 2
+    assert people.downloads.count((note, False)) == 1 and (note, True) not in people.downloads
