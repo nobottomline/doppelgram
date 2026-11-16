@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 
 import httpx
@@ -831,3 +832,79 @@ def test_ai_as_a_topic_is_ordinary_talk(text):
 def test_the_agent_never_says_what_it_is_but_may_talk_about_ai(text, claim):
     from doppelgram.conversation import classify_outgoing
     assert (classify_outgoing(text) == "ai_question") is claim
+
+
+
+@pytest.mark.parametrize("text", ["бот?", "Ты — бот?", "ты чат-бот?", "а не бот ли ты?", "ты-бот?", "а не бот?"])
+def test_more_forms_of_the_bot_question(text):
+    from doppelgram.conversation import classify_incoming
+    assert classify_incoming(text, None) == "ai_question"
+
+
+@pytest.mark.parametrize("text", ["я чат-бот", "я всего лишь нейросеть", "я не являюсь нейросетью", "я — бот"])
+def test_more_forms_of_a_claim(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text) == "ai_question"
+
+
+async def test_taking_over_while_the_plain_answer_is_written_stops_everything(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а какие приложения делаешь?")
+
+    def reply(msgs):
+        if "proposal to meet is waiting for the owner" in msgs[1]["content"]:
+            m.store.update(555, state="owner")  # /self while the answer is written
+            return {"action": "reply", "messages": ["разные, под свои идеи"]}
+        return {"action": "escalate", "category": "meeting", "hold": [], "slots": "суббота",
+                "messages": ["давай в субботу кофе выпьем?"]}
+    m.llm.reply = reply
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == [] and m.store.person(555).state == "owner"
+
+
+async def test_a_taste_in_the_plain_answer_is_recorded_when_sent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а ты какой кофе берёшь?")
+
+    def reply(msgs):
+        if "proposal to meet is waiting for the owner" in msgs[1]["content"]:
+            return {"action": "reply", "messages": ["обычно капучино"], "new_facts": ["пьёт капучино"]}
+        return {"action": "escalate", "category": "meeting", "hold": [], "slots": "суббота",
+                "messages": ["давай в субботу кофе выпьем?"], "new_facts": ["есть машина"]}
+    m.llm.reply = reply
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == ["обычно капучино"]
+    assert m._said(555) == ["пьёт капучино"]  # the draft's fact waits for the draft
+
+
+async def test_no_video_is_downloaded_once_the_pictures_are_full(tmp_path):
+    from test_media_strangers import png
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
+    await match(m)
+    for _ in range(4):
+        people.incoming(555, "", "photo", blob=png())
+    late = [people.incoming(555, "", "video", duration=5, blob=png()) for _ in range(3)]
+    await answered(m, people, clock)
+    assert not any(msg_id in late for msg_id, _ in people.downloads)
+
+
+def test_frame_decoding_is_bounded(monkeypatch):
+    from PIL import Image
+    from test_media_strangers import tiny_video
+
+    import doppelgram.media as media
+    clip = tiny_video(10.0, gop=1000)  # red for 5 s, then blue; a single keyframe
+    late = media.video_frames(clip, 2)[1]
+    assert Image.open(io.BytesIO(late)).convert("RGB").getpixel((32, 32))[2] > 150  # unbounded: the blue half
+    monkeypatch.setattr(media, "MAX_DECODED_FRAMES", 5)
+    bounded = media.video_frames(clip, 2)
+    assert len(bounded) == 2  # still a frame per target, only the first few decoded after the seek
+    assert Image.open(io.BytesIO(bounded[1])).convert("RGB").getpixel((32, 32))[0] > 150  # so still red

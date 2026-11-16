@@ -29,9 +29,13 @@ def image_data_url(raw: bytes, max_side: int) -> str:
     return "data:image/jpeg;base64," + base64.b64encode(to_jpeg(raw, max_side)).decode()
 
 
+MAX_DECODED_FRAMES = 120  # per target after a seek: a long gap between keyframes is not decoded to the end
+
+
 def video_frames(raw: bytes, count: int = 2) -> list[bytes]:
     """A few still frames (JPEG) spread over a video or a video note, so the model sees the person, not only the
-    tiny thumbnail Telegram attaches. Empty if the file cannot be decoded."""
+    tiny thumbnail Telegram attaches. Empty if the file cannot be decoded. Bounded work: after each seek at most
+    MAX_DECODED_FRAMES frames are decoded; the nearest one so far is taken."""
     import av  # imported lazily, like for voice messages
 
     frames: list[bytes] = []
@@ -46,12 +50,15 @@ def video_frames(raw: bytes, count: int = 2) -> list[bytes]:
             for target in targets:
                 if stream.time_base:
                     container.seek(int(target / stream.time_base), stream=stream)
-                for frame in container.decode(video=0):
-                    if frame.time is None or frame.time >= target - 0.05:
-                        buf = io.BytesIO()
-                        frame.to_image().convert("RGB").save(buf, format="JPEG", quality=88)
-                        frames.append(buf.getvalue())
+                taken = None
+                for n, frame in enumerate(container.decode(video=0)):
+                    taken = frame
+                    if frame.time is None or frame.time >= target - 0.05 or n + 1 >= MAX_DECODED_FRAMES:
                         break
+                if taken is not None:
+                    buf = io.BytesIO()
+                    taken.to_image().convert("RGB").save(buf, format="JPEG", quality=88)
+                    frames.append(buf.getvalue())
     except Exception:  # a corrupt or unsupported file: the caller falls back to the thumbnail
         return frames
     return frames

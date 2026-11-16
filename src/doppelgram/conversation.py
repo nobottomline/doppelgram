@@ -82,19 +82,22 @@ class PeopleTransport(Protocol):
 # ------------------------------------------------------------- deterministic
 # Who is writing: "ты бот?", "это нейросеть?", "с ботом общаюсь?", "за тебя gpt отвечает?". Not AI as a topic:
 # "делаю приложения с ИИ" or "ты с нейросетями работаешь?" is ordinary talk.
-_BOT = r"(?:бот(?:ы|а|у|ом|е|ов)?|робот(?:ы|а|у|ом|е|ов)?|нейросет\w*|нейронк\w*|ии|ai|chat\s?gpt|чат\s?гпт|gpt|гпт|искусственн\w*\s+интеллект\w*)"
-_FILL = r"(?:[\s,]+(?:случайно|вообще|что|не|часом|реально|точно|правда|уж|ли|же|ж|там|какой-то|какая-то))*"
+_BOT = r"(?:(?:чат-?)?бот(?:ы|а|у|ом|е|ов)?|робот(?:ы|а|у|ом|е|ов)?|нейросет\w*|нейронк\w*|ии|ai|chat\s?gpt|чат\s?гпт|gpt|гпт|искусственн\w*\s+интеллект\w*)"
+_FILL = (r"(?:[\s,—–-]+(?:случайно|вообще|что|не|часом|реально|точно|правда|уж|ли|же|ж|там|какой-то|какая-то|"
+         r"всего|лишь|просто|только|обычный|обычная|обычная))*")
 _AI_RE = re.compile(
-    rf"\b(?:ты|вы|это){_FILL}[\s,]+{_BOT}(?![\w-])"                       # "ты случайно не бот?", "это gpt?"
+    rf"\b(?:ты|вы|это){_FILL}[\s,—–-]+{_BOT}(?![\w-])"                    # "ты случайно не бот?", "ты — бот?"
+    rf"|^\W*(?:а\s+)?(?:не\s+)?{_BOT}\s*\?"                                # "бот?", "а не бот?"
+    rf"|\b(?:не\s+)?{_BOT}\s+ли\s+(?:ты|вы)\b"                              # "а не бот ли ты?"
     rf"|\b(?:общаюсь|переписываюсь|разговариваю|говорю|болтаю)\s+(?:с|со)\s+{_BOT}(?![\w-])"
     rf"|\b(?:с|со)\s+{_BOT}\s+(?:общаюсь|переписываюсь|разговариваю|говорю|болтаю)"
     rf"|\b{_BOT}\s+(?:за\s+тебя\s+)?(?:отвечает|пишет)\b|\bза\s+тебя\s+(?:отвечает|пишет)\b"
     rf"|\b(?:пишешь|отвечаешь|говоришь)\s+как\s+{_BOT}(?![\w-])"
-    r"|автоответчик\w*", re.I)
+    r"|автоответчик\w*", re.I | re.M)
 # What the agent must never say about itself: that it is, or is not, a bot or a real person.
 _AI_CLAIM_RE = re.compile(
-    rf"\bя{_FILL}[\s,]+(?:{_BOT}(?![\w-])|(?:живой|живая)\b|(?:настоящ\w*|реальн\w*)\s+человек|человек\s*[.!?,)]*\s*$)"
-    rf"|\bне\s+{_BOT}(?![\w-])", re.I | re.M)
+    rf"\bя{_FILL}[\s,—–-]+(?:{_BOT}(?![\w-])|(?:живой|живая)\b|(?:настоящ\w*|реальн\w*)\s+человек|человек\s*[.!?,)]*\s*$)"
+    rf"|\bне\s+{_BOT}(?![\w-])|\bя\s+(?:не\s+)?явля\w*\s+{_BOT}", re.I | re.M)
 _MEET_RE = re.compile(r"(встрет|встреч(?:аемся|аться)|увидимся|увидеться|свидан|приезжай|приеду|заеду|погуляем|"
                       r"сходим|в гости)", re.I)  # invitations, not "люблю погулять" or "выбираюсь в центр"
 # "Is this a real person?" in its many forms is the same question as "are you a bot?".
@@ -310,7 +313,7 @@ How to talk:
 - Stickers, emoji and gifs are reactions: answer what they mean (a sticker that says or waves "привет" is a hello). Never comment on the sticker itself, its picture or the way they wrote, and never ask about it.
 - When they send a photo or a video note of themselves, a short genuine compliment now and then is fine: specific and light (a smile, style, the vibe), never about the body, not every time.
 - Emoji and ")" only as often as the owner's style examples use them; if the examples have no emoji, use none, even if the person does.
-- React first to what they said, then add something of the owner's (a fact, an opinion, a small story from "About the owner"). At most one question per turn, and at most every other turn has one: often just react or share. A good chat is a balance, not an interview.
+- React first to what they said, then add something of the owner's (a fact, an opinion, a small story from "About the owner"). At most one question per turn, and at most every other turn has one: a turn without a question still gives them something to pick up (a playful line, an opinion, a tease), never a flat statement or a lecture. Often just react or share. A good chat is a balance, not an interview.
 - When they ask about the owner, answer directly if "About the owner" covers it. If it does not, answer the way a person would who does not feel like going into it: short and general ("да так, по-разному", "потом расскажу"), or turn the question back. Never say or hint that you cannot answer, do not know, or do not want to make things up about yourself: that gives you away.
 - The world: the owner is an ordinary person and does not know everything, and your own knowledge may be out of date (today's date is in "## Now"). When they mention a name, a show, a song, an event, a place, a meme, slang or news you are not sure about, never pretend: do not guess what it is, do not invent details, do not agree to plans around it.{lookup_rule} Otherwise ask simply, like a person ("а кто это?", "это что?", "не слышал, что там?"); a question like that also keeps the chat going. A plain "не знаю" or "не слышал" about the world is normal: the vague answers above are only for the owner's own life.
 - Pick up threads: details from their profile, things they told you (see your notes), open questions. Never repeat a question or a fact already in the chat (look at what the owner said above): if they ask again about something already told, answer briefly and differently ("да, всё там же") or add something new. If they ask about the owner something "About the owner" lacks, answer vaguely once; if they ask it again, escalate with category "unclear" and a reason naming the missing fact (e.g. "спрашивает, на каком курсе; этого нет в about-me"), so the owner answers and adds it. Never dodge the same question twice, and never answer a different question instead.
@@ -1263,7 +1266,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 continue
             understood = kind in ("sticker",) or m.id not in new_ids
             raw_video = None
-            if kind in ("video_note", "video") and m.id in want_picture:
+            if kind in ("video_note", "video") and m.id in want_picture and len(images) < self.MAX_IMAGES:
                 raw_video = await self.people.download(person.user_id, m.id)  # frames, and the voice in a note
             if kind in ("voice", "video_note") and m.id in new_ids:
                 understood = await self._transcribe(person, m, raw_video)
@@ -1297,7 +1300,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
 
         kind = m.media_kind
         if kind in ("video_note", "video") and raw_video:
-            frames = decoded(video_frames(raw_video, 2))
+            frames = decoded(await asyncio.to_thread(video_frames, raw_video, 2))  # decoding off the event loop
             if frames:
                 return frames
         if kind in ("photo", "image", "sticker"):
@@ -1502,11 +1505,16 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         hold = [t for t in hold if not _WHEN_WHERE_RE.search(t)]
         recent = [m.text or "" for m in history if not m.outgoing][-3:]
         own_idea = not any(_MEET_RE.search(t) or _CALL_RE.search(t) for t in recent)
+        self.store.unset(f"hold_facts:{person.user_id}")
         if own_idea:
             # The agent's own idea: nobody asked, so "гляну расписание" would answer nothing they said.
             hold = [t for t in hold if not _HOLDING_RE.search(t)]
             if not hold and self.mode == "auto" and not self._over_budget(self.clock()):
-                hold = await self._plain_answer(person, history)  # they still get an answer meanwhile
+                hold, plain = await self._plain_answer(person, history)  # they still get an answer meanwhile
+                fresh = self.store.person(person.user_id)
+                if fresh is None or fresh.state != "active":
+                    return  # the owner took over (or blocked) while the answer was being written
+                self._pend_facts(person.user_id, plain, hold, key="hold_facts")
         self._pend_facts(person.user_id, decision or {}, draft)  # the draft the owner may send with «ок»
         send_hold = bool(hold) and self.mode == "auto"
         night = self._night_end() is not None
@@ -1524,7 +1532,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.set_outbox(person.user_id, upto, hold, now + delay, keep_cards=True)
             self.wake.set()
 
-    async def _plain_answer(self, person: Person, history: list[ChatMessage]) -> list[str]:
+    async def _plain_answer(self, person: Person, history: list[ChatMessage]) -> tuple[list[str], dict]:
         """An ordinary answer to their last message while the owner decides on the agent's idea to meet."""
         try:
             decision = await self._compose(person, history, instruction=(
@@ -1532,14 +1540,14 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 "proposal to meet is waiting for the owner."))
         except LLMError as exc:
             log.warning("no plain answer for %s: %s", person.user_id, exc)
-            return []
-        action, raw, _ = parse_reply(decision)
+            return [], {}
+        action, raw, data = parse_reply(decision)
         if action != "reply":
-            return []
+            return [], {}
         messages = self._tame([humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars]
                                for t in raw][:2], history)
         return [t for t in messages if classify_outgoing(t, intimacy=self.intimacy) is None
-                and not _WHEN_WHERE_RE.search(t) and not _HOLDING_RE.search(t)]
+                and not _WHEN_WHERE_RE.search(t) and not _HOLDING_RE.search(t)], data
 
     def _schedule_follow_up(self, user_id: int, decision: dict, now: float, *, after_send: bool = True) -> None:
         if not self.cfg.follow_ups:
@@ -1792,23 +1800,23 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return []
         return [str(f) for f in value if isinstance(f, str)] if isinstance(value, list) else []
 
-    def _pend_facts(self, user_id: int, decision: dict, messages: list[str]) -> None:
+    def _pend_facts(self, user_id: int, decision: dict, messages: list[str], key: str = "facts") -> None:
         """What these messages say about the owner beyond about-me. They count as said once one of them actually
         goes out (see _facts_sent); every new decision replaces them, so a skipped draft leaves nothing behind."""
         raw = decision.get("new_facts")
         facts = [scrub_text(" ".join(f.split()), 200) for f in raw if isinstance(f, str) and f.strip()][:3] \
             if isinstance(raw, list) else []
         if facts and messages:
-            self.store.set(f"facts:{user_id}", json.dumps({"texts": messages, "facts": facts}, ensure_ascii=False))
+            self.store.set(f"{key}:{user_id}", json.dumps({"texts": messages, "facts": facts}, ensure_ascii=False))
         else:
-            self.store.unset(f"facts:{user_id}")
+            self.store.unset(f"{key}:{user_id}")
 
-    def _facts_sent(self, user_id: int, text: str) -> None:
+    def _facts_sent(self, user_id: int, text: str, key: str = "facts") -> None:
         """One of the pending decision's messages went out: its facts are kept for consistency, and a note for
         the owner waits until it is delivered (_report_facts). Synchronous and idempotent: it runs right after
         the send, before the send is recorded, and the lost-send recovery runs it again after a crash."""
         try:
-            pending = json.loads(self.store.get(f"facts:{user_id}") or "{}")
+            pending = json.loads(self.store.get(f"{key}:{user_id}") or "{}")
         except ValueError:
             pending = {}
         texts = pending.get("texts") if isinstance(pending, dict) else None
@@ -1821,7 +1829,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             self.store.set(f"facts_note:{user_id}", json.dumps(note + [f for f in added if f not in note],
                                                                ensure_ascii=False))
             self.store.set(f"said:{user_id}", json.dumps((said + added)[-15:], ensure_ascii=False))
-        self.store.unset(f"facts:{user_id}")
+        self.store.unset(f"{key}:{user_id}")
 
     def _facts_note(self, user_id: int) -> list[str]:
         try:
@@ -2014,7 +2022,9 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
         """
         epoch = self._epoch_of(person.user_id) if epoch is None else epoch
         # A holding reply ("гляну и напишу") says nothing about the owner, even if a draft shares its words.
-        counts_facts = not owner_text and not (from_outbox and self._hold_queued(person.user_id))
+        is_hold = from_outbox and self._hold_queued(person.user_id)
+        counts_facts = not owner_text
+        facts_key = "hold_facts" if is_hold else "facts"  # a plain answer sent as the hold has its own facts
         sent = 0
         for i, text in enumerate(messages):
             if i == 0 and self.cfg.read_receipts and upto and self._can_send_now(person.user_id, epoch, approved):
@@ -2046,7 +2056,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 if i == 0:
                     self.store.unset(f"reply_to:{person.user_id}")
                 if counts_facts:
-                    self._facts_sent(person.user_id, text)
+                    self._facts_sent(person.user_id, text, facts_key)
                 self.store.commit_send(person.user_id, mine.id, self.clock(), upto, messages[i + 1:], messages[i:])
                 await self._report_facts(person)
                 continue
@@ -2078,7 +2088,7 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
                 return Delivery("send_failed", sent)
             # ---- progress first: whatever happens next, this message is never sent again ----
             if counts_facts:
-                self._facts_sent(person.user_id, text)
+                self._facts_sent(person.user_id, text, facts_key)
             sent += 1
             if i == 0:
                 self.store.unset(f"reply_to:{person.user_id}")

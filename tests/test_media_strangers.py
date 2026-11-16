@@ -2143,7 +2143,7 @@ def test_an_unknown_hold_marker_is_never_trusted_and_never_crashes(tmp_path, mar
 
 
 
-def tiny_video(seconds=2.0, with_audio=False) -> bytes:
+def tiny_video(seconds=2.0, with_audio=False, gop=None) -> bytes:
     """A real little mp4: red for the first half, blue for the second."""
     import av
     from PIL import Image
@@ -2152,6 +2152,9 @@ def tiny_video(seconds=2.0, with_audio=False) -> bytes:
         stream = out.add_stream("mpeg4", rate=10)
         stream.width = stream.height = 64
         stream.pix_fmt = "yuv420p"
+        if gop:
+            stream.codec_context.gop_size = gop  # one keyframe for the whole clip: a seek lands at the start
+            stream.options = {"sc_threshold": "1000000000"}  # no extra keyframe where the colour changes
         for i in range(int(seconds * 10)):
             color = (220, 30, 30) if i < seconds * 5 else (30, 30, 220)
             frame = av.VideoFrame.from_image(Image.new("RGB", (64, 64), color))
