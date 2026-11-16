@@ -135,11 +135,6 @@ class ConversationConfig:
     style_file: Path
     enabled: bool = False
     mode: str = "auto"  # auto: the agent writes itself | approve: every message waits for the owner's «ок»
-    # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
-    # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
-    # Intimate topics (adults only): flirting, talking about sex, agreeing on an intimate meeting when the
-    # person clearly wants it. Off: such topics go to the owner. Graphic sexting always does.
-    intimacy: bool = True
     # People who write first without a match notice (e.g. Бибинто shares the username after mutual ratings):
     # "ask" — a card to the owner, who answers «веди» or «игнор»; "lead" — the agent takes up acquaintances
     # by itself and asks the owner about the rest; "ignore". Contacts, bots and existing chats are never touched.
@@ -162,6 +157,8 @@ class ConversationConfig:
     # The owner's notes on words and slang ("слово - что значит" per line), shown to the model if the file exists.
     slang_file: Path | None = None
     builtin_slang: bool = True  # also a built-in list of common chat slang (slang.py)
+    # Writing first: off by default (the agent answers only people who wrote). When on, only matches the agent
+    # rated at least write_first_min_score (1-10 taste score), at most first_messages_per_day a day.
     write_first: bool = False
     write_first_min_score: int = 9
     first_messages_per_day: int = 3
@@ -322,7 +319,7 @@ _CONV_KEYS = {f.name for f in fields(ConversationConfig)}
 
 def _conversations(base: Path, table: dict) -> ConversationConfig:
     values = dict(table)
-    for removed in ("owner_age", "min_match_age"):  # removed options: ignored in older configs
+    for removed in ("owner_age", "min_match_age", "intimacy"):  # removed options: ignored in older configs
         values.pop(removed, None)
     unknown = set(values) - _CONV_KEYS
     if unknown:
