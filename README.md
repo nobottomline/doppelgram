@@ -253,30 +253,41 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   asks the person instead.
 - **What it says about you.** Anything about you the agent said that is not in `about-me.md` comes to you, once the message is sent, as a
   short note ("агент сказал о вас то, чего нет в about-me: …") and is remembered for that person, so it stays
-  consistent. If it is wrong, add the truth to `about-me.md` or take the chat over.
+  consistent. If it is wrong, add the truth to `about-me.md` or take the chat over. Small everyday tastes your file
+  does not cover (a kind of coffee, a genre) it answers with a modest, general choice instead of dodging, and you
+  get the same note. If someone asks again about something that matters and is not in your file (your year of
+  study, what your app does), the question comes to you instead of a second dodge.
+- **Your schedule is for meetings.** It tells when you can meet, not when you can text: the agent never uses
+  classes as a reason to leave a chat and does not talk about them unprompted. It keeps the focus on the
+  person, writes short messages (about a dozen words), and asks a question in at most every other turn.
 - **Read receipts.** Their messages are marked read only when an answer is about to go out, a few seconds
   before typing (a network failure right after can leave them read without an answer).
-- **Late answers.** Answering hours later, it may open with a short reason from your life ("сорри, пары
-  были"), and it answers "why so long?" the same way.
+- **Late answers.** Answering hours later, it may open with a short reason ("сорри, закрутился", "только с
+  тренировки"), and it answers "why so long?" the same way.
 - **Quiet chats.** If a warm chat goes quiet, it writes once, lightly, after 20–60 hours (`follow_ups`), or
   when it promised to (the model may choose 1–96 hours); never twice in a row.
   The delay starts when the answer is delivered. If the model explicitly postpones an answer, its later
   check starts from that decision; a new message or owner takeover cancels the old check. A temporary model
   error preserves a scheduled check for retry.
-- **Photos, stickers, voice.** Photos and frames of gifs, videos and video notes are shown to the model;
-  stickers are read as their emoji; voice messages and video notes are transcribed by an audio model on the
+- **Photos, stickers, voice.** Photos are shown to the model; for videos and video notes it sees a few frames
+  taken from the file (the thumbnail if it cannot be decoded), for gifs a frame; stickers are shown as the
+  sticker itself, so a cat saying "привет" is read as a hello, and the agent never comments on the sticker. When
+  people show themselves, a short, specific compliment now and then is fine (never about the body). Voice
+  messages and video notes are transcribed by an audio model on the
   `[llm]` endpoint and key (`speech_model`, default `google/gemini-3.8-flash`; the endpoint must accept
   `input_audio`; about $0.002 a minute on OpenRouter, which needs $0.50 on the key for audio requests).
 
 ### What always comes to you
 
-- **Meetings and calls.** The agent never fixes a time. It replies like a busy person ("гляну расписание и
-  напишу") and sends you a card with free times from your schedule and its draft. Reply in plain words
+- **Meetings and calls.** The agent never fixes a time. When they suggest one, it replies like a busy person
+  ("гляну расписание и напишу"); when it is its own idea, it just answers their last message normally. Either way
+  you get a card with free times from your schedule and its draft. Reply in plain words
   ("суббота в 18", "не могу, перенеси") and it writes that; «ок» sends its draft, «!текст» your words as
   they are.
-- **"Are you a bot?"** A direct question ("ты бот?", "ты живой человек?") is never answered by the agent: it
-  never claims or denies being an AI, the chat pauses and waits for you. Tricks such as "which model are you" are
-  not that question: the agent handles them itself (see above).
+- **"Are you a bot?"** A question about who is writing ("ты бот?", "это нейросеть?", "ты живой человек?") is
+  never answered by the agent: it never claims or denies being an AI, the chat pauses and waits for you. AI as a
+  topic is ordinary talk ("ты с ИИ делаешь приложения?"). Tricks such as "which model are you" are not that
+  question either: the agent handles them itself (see above).
 - **Money and contacts.** It declines money requests itself and never shares contacts or links; any promise
   to pay comes to you.
 - **Intimacy.** The agent may flirt and talk about it when the person clearly wants it too, follows their

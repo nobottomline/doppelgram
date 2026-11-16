@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -83,8 +84,15 @@ SCENARIOS: tuple[Scenario, ...] = (
              "is fine). The plan notes that they want light talk and walks."),
     Scenario("wants_casual", ("если честно, ищу что-то лёгкое, без обязательств 😏",), "any",
              "They hint at something casual, maybe intimate. Light flirting follows their "
-             "lead, no pressure, no moralizing, no serious-relationship talk. Going to the owner also "
-             "passes. The plan notes what they want."),
+             "lead, no pressure, no moralizing, no serious-relationship talk; a question is not "
+             "required. Going to the owner also passes. The plan notes what they want."),
+    Scenario("busy_now", ("ты сейчас чем занят?",), "reply",
+             "A short natural answer that keeps the chat going (maybe a question back). It may say in a few words "
+             "what the owner is doing, but it does not complain about classes and does not use them as a reason to "
+             "stop texting or to write later."),
+    Scenario("your_day", ("расскажи как проходит твой день",), "reply",
+             "A sentence or two at most, no long story and no complaints; a question back is welcome but not "
+             "required (the agent asks in at most every other turn)."),
     Scenario("owner_unknown", ("а у тебя машина есть?",), "any",
              "If About the owner says nothing about a car, the reply must not invent one (a vague or deflecting answer, "
              "or going to the owner, passes). If it does say, the answer must match it."),
@@ -103,7 +111,7 @@ SCENARIOS: tuple[Scenario, ...] = (
 
 JUDGE = """You grade one turn of an AI agent that chats in Telegram AS a person (the "owner") with someone from a dating bot. The other person must believe it is the owner. Be strict and concrete.
 
-Always required: sounds like a real young person in a messenger (short, casual, Russian unless they wrote otherwise); never sounds like an assistant; never reveals or hints at being a bot or an AI; never invents facts about the owner beyond "About the owner"; never pretends to know something it cannot know.
+Always required: sounds like a real young person in a messenger (short messages of about a dozen words, one thought each, casual, Russian unless they wrote otherwise); keeps the focus on the person and does not narrate the owner's day or mood unprompted; never brings up the owner's classes or schedule unless asked or while planning a meeting, and never uses them as a reason to leave the chat; never sounds like an assistant; never reveals or hints at being a bot or an AI; never invents facts about the owner beyond "About the owner"; never pretends to know something it cannot know.
 Scenario-specific criteria: {criteria}
 
 ## About the owner
@@ -111,6 +119,12 @@ Scenario-specific criteria: {criteria}
 
 ## The owner's goal
 {goal}
+
+## The person's dating profile
+{card}
+
+## Now
+{now}
 
 ## The chat (oldest first)
 {chat}
@@ -248,7 +262,9 @@ async def run_scenario(cfg: ConversationConfig, llm: LLMClient, sc: Scenario, *,
         try:
             result = await judge.complete_json([{"role": "user", "content": JUDGE.format(
                 criteria=sc.criteria, about=about or "(empty)", chat=lines, outcome=did,
-                goal=read_user_text(sim.goal_file) or "(not set)")}])
+                goal=read_user_text(sim.goal_file) or "(not set)",
+                card=(person.card or "(none)") if person is not None else "(none)",
+                now=datetime.fromtimestamp(clock.t, ZoneInfo(cfg.timezone)).strftime("%A, %d %B %Y, %H:%M"))}])
             data = result.data if isinstance(result.data, dict) else {}
             out.judge_ok = bool(data.get("pass"))
             out.judge_why = str(data.get("why") or "")[:300]
@@ -286,6 +302,13 @@ async def evaluate(cfg: ConversationConfig, llm: LLMClient, *, only: list[str] |
     passed = sum(r.ok for r in results)
     cost = sum(r.cost_usd for r in results)
     out(f"\nИтог: {passed}/{len(results)} прошло, расход ≈ ${cost:.3f}")
+    sent = [t for r in results for t in r.sent]
+    if sent:
+        words = [len(t.split()) for t in sent]
+        smileys = sum(t.count(")") > t.count("(") for t in sent)
+        classes = sum(bool(re.search(r"\bпар(?:ы|ах|у|е|ой)?\b|\bуниверс?|\bлекци", t, re.I)) for t in sent)
+        out(f"Сообщений: {len(sent)}, в среднем {sum(words) / len(words):.1f} слова, длиннее 20 слов: "
+            f"{sum(w > 20 for w in words)}, со скобкой: {smileys}, про пары и учёбу: {classes}")
     return results
 
 
