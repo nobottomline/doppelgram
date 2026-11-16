@@ -83,12 +83,15 @@ class PeopleTransport(Protocol):
 # Who is writing: "ты бот?", "это нейросеть?", "с ботом общаюсь?", "за тебя gpt отвечает?". Not AI as a topic:
 # "делаю приложения с ИИ" or "ты с нейросетями работаешь?" is ordinary talk.
 _BOT = r"(?:(?:чат-?)?бот(?:ы|а|у|ом|е|ов)?|робот(?:ы|а|у|ом|е|ов)?|нейросет\w*|нейронк\w*|ии|ai|chat\s?gpt|чат\s?гпт|gpt|гпт|искусственн\w*\s+интеллект\w*)"
+# "Is" forms (nominative): "ты нейросеть?", not "ты нейросетями пользуешься?".
+_BOT_IS = (r"(?:(?:чат-?)?бот|робот|нейросеть|нейросетка|нейронка|ии|ai|chat\s?gpt|чат\s?гпт|gpt|гпт|"
+           r"искусственный\s+интеллект)")
 _FILL = (r"(?:[\s,—–-]+(?:случайно|вообще|что|не|часом|реально|точно|правда|уж|ли|же|ж|там|какой-то|какая-то|"
-         r"всего|лишь|просто|только|обычный|обычная|обычная))*")
+         r"всего|лишь|просто|только|обычный|обычная))*")  # distinct words: linear matching, no blow-up
 _AI_RE = re.compile(
-    rf"\b(?:ты|вы|это){_FILL}[\s,—–-]+{_BOT}(?![\w-])"                    # "ты случайно не бот?", "ты — бот?"
-    rf"|^\W*(?:а\s+)?(?:не\s+)?{_BOT}\s*\?"                                # "бот?", "а не бот?"
-    rf"|\b(?:не\s+)?{_BOT}\s+ли\s+(?:ты|вы)\b"                              # "а не бот ли ты?"
+    rf"\b(?:ты|вы|это){_FILL}[\s,—–-]+{_BOT_IS}(?![\w-])"                 # "ты случайно не бот?", "ты — бот?"
+    rf"|^\W*(?:а\s+)?(?:не\s+)?{_BOT_IS}\s*\?"                             # "бот?", "а не бот?"
+    rf"|\b(?:не\s+)?{_BOT_IS}\s+ли\s+(?:ты|вы)\b"                           # "а не бот ли ты?"
     rf"|\b(?:общаюсь|переписываюсь|разговариваю|говорю|болтаю)\s+(?:с|со)\s+{_BOT}(?![\w-])"
     rf"|\b(?:с|со)\s+{_BOT}\s+(?:общаюсь|переписываюсь|разговариваю|говорю|болтаю)"
     rf"|\b{_BOT}\s+(?:за\s+тебя\s+)?(?:отвечает|пишет)\b|\bза\s+тебя\s+(?:отвечает|пишет)\b"
@@ -96,8 +99,8 @@ _AI_RE = re.compile(
     r"|автоответчик\w*", re.I | re.M)
 # What the agent must never say about itself: that it is, or is not, a bot or a real person.
 _AI_CLAIM_RE = re.compile(
-    rf"\bя{_FILL}[\s,—–-]+(?:{_BOT}(?![\w-])|(?:живой|живая)\b|(?:настоящ\w*|реальн\w*)\s+человек|человек\s*[.!?,)]*\s*$)"
-    rf"|\bне\s+{_BOT}(?![\w-])|\bя\s+(?:не\s+)?явля\w*\s+{_BOT}", re.I | re.M)
+    rf"\bя{_FILL}[\s,—–-]+(?:{_BOT_IS}(?![\w-])|(?:живой|живая)\b|(?:настоящ\w*|реальн\w*)\s+человек|человек\s*[.!?,)]*\s*$)"
+    rf"|\bне\s+{_BOT_IS}(?![\w-])|\bя\s+(?:не\s+)?явля\w*\s+{_BOT}", re.I | re.M)
 _MEET_RE = re.compile(r"(встрет|встреч(?:аемся|аться)|увидимся|увидеться|свидан|приезжай|приеду|заеду|погуляем|"
                       r"сходим|в гости)", re.I)  # invitations, not "люблю погулять" or "выбираюсь в центр"
 # "Is this a real person?" in its many forms is the same question as "are you a bot?".
@@ -1546,8 +1549,10 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             return [], {}
         messages = self._tame([humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars]
                                for t in raw][:2], history)
-        return [t for t in messages if classify_outgoing(t, intimacy=self.intimacy) is None
-                and not _WHEN_WHERE_RE.search(t) and not _HOLDING_RE.search(t)], data
+        if not messages or any(classify_outgoing(t, intimacy=self.intimacy) is not None
+                               or _WHEN_WHERE_RE.search(t) or _HOLDING_RE.search(t) for t in messages):
+            return [], {}  # all or nothing: half an answer, or facts of a line never sent, would mislead
+        return messages, data
 
     def _schedule_follow_up(self, user_id: int, decision: dict, now: float, *, after_send: bool = True) -> None:
         if not self.cfg.follow_ups:

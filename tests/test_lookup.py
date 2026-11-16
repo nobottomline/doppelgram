@@ -908,3 +908,41 @@ def test_frame_decoding_is_bounded(monkeypatch):
     bounded = media.video_frames(clip, 2)
     assert len(bounded) == 2  # still a frame per target, only the first few decoded after the seek
     assert Image.open(io.BytesIO(bounded[1])).convert("RGB").getpixel((32, 32))[0] > 150  # so still red
+
+
+
+def test_the_bot_guard_is_fast_on_long_messages():
+    import time
+
+    from doppelgram.conversation import classify_incoming, classify_outgoing
+    for text in ("ты " + "обычная " * 40 + "девушка?", "я " + "просто " * 60 + "устал", "ты, " * 200 + "ок"):
+        start = time.perf_counter()
+        classify_incoming(text, None)
+        classify_outgoing(text)
+        assert time.perf_counter() - start < 0.05, text[:30]
+
+
+@pytest.mark.parametrize("text", ["ты только нейросетями пользуешься или сам тоже рисуешь?",
+                                  "ты с роботами работаешь?", "ты ботами занимаешься?"])
+def test_tools_and_topics_are_not_the_bot_question(text):
+    from doppelgram.conversation import classify_incoming
+    assert classify_incoming(text, None) is None
+
+
+async def test_a_plain_answer_with_a_dropped_line_is_not_sent_at_all(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а ты какой кофе берёшь?")
+
+    def reply(msgs):
+        if "proposal to meet is waiting for the owner" in msgs[1]["content"]:
+            return {"action": "reply", "messages": ["обычно капучино", "давай завтра в кафе?"],
+                    "new_facts": ["пьёт капучино", "любит кафе"]}
+        return {"action": "escalate", "category": "meeting", "hold": [], "slots": "суббота",
+                "messages": ["давай в субботу кофе выпьем?"]}
+    m.llm.reply = reply
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == [] and m._said(555) == []
