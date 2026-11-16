@@ -132,7 +132,7 @@ allowed_commands = []        # other commands the model may type; any other text
 
 # Chats with matched people (Leomatch gives a link to the person's Telegram after a mutual like).
 # Off by default. In "approve" mode every message waits for your "ок"; in "auto" the agent writes itself
-# but still sends you "are you a bot?", meetings, money, contacts, graphic content, media and anything unclear.
+# but still sends you "are you a bot?", meetings, money, contacts, media and anything unclear.
 [conversations]
 enabled = false
 mode = "auto"                  # auto: the agent writes itself | approve: drafts for your «ок» ("/chat подтверждение")

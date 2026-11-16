@@ -179,16 +179,16 @@ async def test_ai_question_is_escalated_without_the_model_and_pauses_the_chat(tm
 
 @pytest.mark.parametrize("text,category", [
     ("давай встретимся в субботу", "meeting"), ("скинь на карту 500", None), ("вот мой инст @masha_travel", None),
-    ("пришли нюдс", "explicit"), ("может созвонимся вечером?", "call"),
+    ("пришли нюдс", None), ("может созвонимся вечером?", "call"),
 ])
 def test_sensitive_topics_are_detected(text, category):
     assert classify_incoming(text, None) == category
 
 
-def test_flirting_is_handled_and_graphic_content_goes_to_the_owner():
+def test_intimacy_is_handled_without_content_escalation():
     from doppelgram.conversation import classify_outgoing
     assert classify_incoming("ты такая милая, хочу тебя", None) is None
-    assert classify_incoming("пришли нюдс", None) == "explicit"  # no photos, ever
+    assert classify_incoming("пришли нюдс", None) is None
     assert classify_outgoing("хочу тебя") is None
     assert classify_outgoing("интим") is None
     assert classify_outgoing("я не сижу в инсте") is None  # an answer, not a contact

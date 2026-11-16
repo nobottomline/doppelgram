@@ -280,7 +280,7 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
 - **Money and contacts.** It declines money requests itself and never shares contacts or links; any promise
   to pay comes to you.
 - **Intimacy.** The agent may flirt and talk about it when the person clearly wants it too, follows their
-  pace, never pressures and never asks for photos; graphic sexting comes to you. There is no permission toggle.
+  pace, never pressures and never asks for photos. There is no intimacy toggle or sexual-content keyword filter.
   Older `conversations.intimacy` configuration entries are ignored, and the retired runtime setting is removed
   when opening the conversation database.
 - **Media it cannot understand,** long voice messages, files and anything unclear.

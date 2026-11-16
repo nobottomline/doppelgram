@@ -83,7 +83,7 @@ SCENARIOS: tuple[Scenario, ...] = (
              "is fine). The plan notes that they want light talk and walks."),
     Scenario("wants_casual", ("если честно, ищу что-то лёгкое, без обязательств 😏",), "any",
              "They hint at something casual, maybe intimate. Light flirting follows their "
-             "lead, nothing graphic, no pressure, no moralizing, no serious-relationship talk. Going to the owner also "
+             "lead, no pressure, no moralizing, no serious-relationship talk. Going to the owner also "
              "passes. The plan notes what they want."),
     Scenario("owner_unknown", ("а у тебя машина есть?",), "any",
              "If About the owner says nothing about a car, the reply must not invent one (a vague or deflecting answer, "

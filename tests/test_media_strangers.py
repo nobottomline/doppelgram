@@ -406,20 +406,6 @@ async def test_a_chat_the_owner_wrote_in_long_ago_is_never_a_stranger(tmp_path):
     assert m.store.person(777).state == "blocked" and m.llm.calls == [] and inbox == []
 
 
-@pytest.mark.parametrize("text", ["хочу сосать", "скинь нюдс", "давай секстинг"])
-async def test_graphic_sexting_goes_to_the_owner(tmp_path, text):
-    from doppelgram.conversation import classify_outgoing
-    assert classify_outgoing(text) == "explicit"
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
-    await match(m)
-    people.incoming(555, "ты такой милый)")
-    m.llm.reply = {"action": "reply", "messages": [text]}
-    await answered(m, people, clock)
-    clock.t += 31
-    await m.tick()
-    assert people.sent_texts(555) == [] and "интимная тема" in inbox[-1]
-
-
 async def test_transcription_respects_the_daily_budget(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, daily_budget_usd=0.1)
     m.transcriber = FakeTranscriber("привет")
@@ -501,16 +487,10 @@ async def test_wrote_before_scans_the_history_for_the_accounts_own_messages():
 
 @pytest.mark.parametrize("text", ["я закончила универ", "смотрю канал про путешествия", "без страха",
                                   "работаю аналитиком", "член клуба любителей кино"])
-def test_ordinary_words_are_not_graphic(text):
+def test_ordinary_words_do_not_trigger_an_escalation(text):
     from doppelgram.conversation import classify_outgoing
     assert classify_incoming(text, None) is None
     assert classify_outgoing(text) is None
-
-
-def test_graphic_words_are_caught_in_both_directions():
-    from doppelgram.conversation import classify_outgoing
-    assert classify_outgoing("хочу сосать") == "explicit"
-    assert classify_incoming("хочу сосать", None) == "explicit"
 
 
 async def test_an_unrelated_command_does_not_abort_triage(tmp_path):
@@ -555,13 +535,6 @@ async def test_a_match_with_an_old_chat_stays_with_the_owner(tmp_path):
     await match(m)
     await m.tick()
     assert m.store.person(555).state == "owner" and "Вы уже переписываетесь" in inbox[-1] and m.llm.calls == []
-
-
-@pytest.mark.parametrize("text, kind", [("возьму твой член в рот", "explicit"), ("член клуба", None),
-                                        ("я пошла спать", None), ("это пошлость", None)])
-def test_graphic_words_in_context(text, kind):
-    from doppelgram.conversation import classify_outgoing
-    assert classify_outgoing(text) == kind
 
 
 @pytest.mark.parametrize("text, money", [("скину тебе 500 на карту", True), ("не заплачу меньше тысячи", True)])
