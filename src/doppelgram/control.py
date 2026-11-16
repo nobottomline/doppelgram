@@ -113,10 +113,9 @@ def parse_command(text: str) -> Command:
         return Command(name, int(rest)) if rest.isdigit() else Command("unknown", text)
     if name == "chat_mode":
         words = rest.lower().split()
-        if len(words) == 2 and words[0] in ("первым", "first", "интим", "intimacy"):
+        if len(words) == 2 and words[0] in ("первым", "first"):
             onoff = {"вкл": "on", "on": "on", "выкл": "off", "off": "off"}.get(words[1])
-            key = "first" if words[0] in ("первым", "first") else "intimacy"
-            return Command("chat_mode", f"{key}:{onoff}") if onoff else Command("unknown", text)
+            return Command("chat_mode", f"first:{onoff}") if onoff else Command("unknown", text)
         if len(words) == 2 and words[0] in ("незнакомые", "strangers"):
             mode = {"спрашивать": "ask", "ask": "ask", "вести": "lead", "веди": "lead", "lead": "lead",
                     "игнор": "ignore", "ignore": "ignore"}.get(words[1])
@@ -194,7 +193,7 @@ def help_text(bots: list[str]) -> Html:
         "",
         b("Переписка с мэтчами"),
         Html(f"{code('/chat вкл | выкл | подтверждение | авто')} · {code('/chat первым вкл | выкл')} · "
-             f"{code('/chat порог 9')} · {code('/chat интим вкл | выкл')} · "
+             f"{code('/chat порог 9')} · "
              f"{code('/chat незнакомые спрашивать | вести | игнор')} · {code('/dialogs')} · "
              f"{code('/lead 123')} · {code('/self 123')}"),
         "",

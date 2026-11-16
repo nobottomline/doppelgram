@@ -9,9 +9,8 @@ from doppelgram.conversation import ConversationStore, PersonRef, classify_incom
 
 
 @pytest.mark.parametrize("text", ["мне 16", "я 17", "я в 11 классе", "учусь в девятом классе"])
-@pytest.mark.parametrize("intimacy", [False, True])
-def test_age_and_school_words_do_not_trigger_a_category(text, intimacy):
-    assert classify_incoming(text, None, intimacy=intimacy) is None
+def test_age_and_school_words_do_not_trigger_a_category(text):
+    assert classify_incoming(text, None) is None
 
 
 @pytest.mark.parametrize("voice", [False, True])
@@ -52,7 +51,7 @@ def test_legacy_flags_are_removed_without_changing_chat_state_or_work(tmp_path, 
     store.update(555, state=state, due_at=200, handled_upto=5, owner_upto=6, memory="любит джаз")
     store.set_outbox(555, 5, ["owner message"], 300, approved=True, owner_text=True)
     store.add_card(999, 555, "escalation", 5, ["draft"], 100)
-    store.set("intimacy", "0")
+    store.set("mode", "approve")
     store.set("minor_at:555", "123")
     store.set("minorXat:unrelated", "keep")
     store.db.execute("ALTER TABLE people ADD COLUMN minor INTEGER NOT NULL DEFAULT 0")
@@ -67,7 +66,7 @@ def test_legacy_flags_are_removed_without_changing_chat_state_or_work(tmp_path, 
         assert "minor" not in {r[1] for r in store.db.execute("PRAGMA table_info(people)")}
         assert store.get("minor_at:555") is None
         assert store.get("minorXat:unrelated") == "keep"
-        assert store.get("intimacy") == "0"
+        assert store.get("mode") == "approve"
         assert store.person(555) == person
         assert store.db.execute("SELECT * FROM cards").fetchall() == cards
         assert store.due_outbox(400) == outbox

@@ -431,20 +431,6 @@ async def test_a_chat_the_owner_wrote_in_long_ago_is_never_a_stranger(tmp_path):
     assert m.store.person(777).state == "blocked" and m.llm.calls == [] and inbox == []
 
 
-@pytest.mark.parametrize("text", ["хочу сосать", "скинь нюдс", "давай секстинг"])
-async def test_graphic_sexting_goes_to_the_owner_even_with_intimacy(tmp_path, text):
-    from doppelgram.conversation import classify_outgoing
-    assert classify_outgoing(text, intimacy=True) == "explicit"
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
-    await match(m)
-    people.incoming(555, "ты такой милый)")
-    m.llm.reply = {"action": "reply", "messages": [text]}
-    await answered(m, people, clock)
-    clock.t += 31
-    await m.tick()
-    assert people.sent_texts(555) == [] and "интимная тема" in inbox[-1]
-
-
 async def test_transcription_respects_the_daily_budget(tmp_path):
     m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, daily_budget_usd=0.1)
     m.transcriber = FakeTranscriber("привет")
@@ -526,16 +512,10 @@ async def test_wrote_before_scans_the_history_for_the_accounts_own_messages():
 
 @pytest.mark.parametrize("text", ["я закончила универ", "смотрю канал про путешествия", "без страха",
                                   "работаю аналитиком", "член клуба любителей кино"])
-def test_ordinary_words_are_not_graphic(text):
+def test_ordinary_words_do_not_trigger_an_escalation(text):
     from doppelgram.conversation import classify_outgoing
-    assert classify_incoming(text, None, intimacy=True) is None
-    assert classify_outgoing(text, intimacy=True) is None
-
-
-def test_graphic_words_are_caught_with_intimacy_off_too():
-    from doppelgram.conversation import classify_outgoing
-    assert classify_outgoing("хочу сосать", intimacy=False) == "explicit"
-    assert classify_incoming("хочу сосать", None, intimacy=False) == "explicit"
+    assert classify_incoming(text, None) is None
+    assert classify_outgoing(text) is None
 
 
 async def test_an_unrelated_command_does_not_abort_triage(tmp_path):
@@ -582,13 +562,6 @@ async def test_a_match_with_an_old_chat_stays_with_the_owner(tmp_path):
     assert m.store.person(555).state == "owner" and "Вы уже переписываетесь" in inbox[-1] and m.llm.calls == []
 
 
-@pytest.mark.parametrize("text, kind", [("возьму твой член в рот", "explicit"), ("член клуба", None),
-                                        ("я пошла спать", None), ("это пошлость", "explicit")])
-def test_explicit_words_in_context(text, kind):
-    from doppelgram.conversation import classify_outgoing
-    assert classify_outgoing(text, intimacy=False) == kind
-
-
 @pytest.mark.parametrize("text, money", [("скину тебе 500 на карту", True), ("не заплачу меньше тысячи", True)])
 def test_payment_promises_with_words_between(text, money):
     from doppelgram.conversation import classify_outgoing
@@ -630,24 +603,16 @@ async def test_a_takeover_while_a_meeting_draft_is_written_wins(tmp_path):
     assert m.store.person(555).state == "owner" and not any("речь о встрече" in t for t in inbox)
 
 
-async def test_a_reply_stopped_at_send_time_is_replaced_by_a_new_one(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+async def test_a_legacy_unsafe_queue_entry_is_replaced_by_a_new_reply(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
-    people.incoming(555, "привет)")
-    m.llm.reply = {"action": "reply", "messages": ["хочу тебя, секс вечером?"]}
-    await answered(m, people, clock)  # queued
-    real_typing = people.typing
-
-    async def typing_then_off(user_id, seconds):
-        people.typing = real_typing  # once
-        await m.command("chat_mode", "intimacy:off")
-        await real_typing(user_id, seconds)
-    people.typing = typing_then_off
+    upto = people.incoming(555, "привет)")
+    m.store.update(555, handled_upto=upto)
+    m.store.set_outbox(555, upto, ["может созвонимся?"], clock())
     m.llm.reply = {"action": "reply", "messages": ["как прошёл день?"]}
     for _ in range(4):
-        clock.t += 31
         await m.tick()
-    people.typing = real_typing
+        clock.t += 31
     assert people.sent_texts(555) == ["как прошёл день?"]
 
 
@@ -797,7 +762,7 @@ async def test_a_restart_while_typing_resumes_the_queued_reply_without_repeats(t
 
 
 async def owner_ok_card(tmp_path, messages):
-    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
     await match(m)
     people.incoming(555, "привет)")
     m.llm.reply = {"action": "reply", "messages": messages}
@@ -1457,7 +1422,7 @@ def test_only_invitations_count_as_meetings(text, meeting):
 
 # ------------------------------------------------------------------ review of plans, follow-ups, meetings
 async def meeting_with_hold(tmp_path, hold="давай, гляну расписание и напишу", **over):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True, **over)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, **over)
     await match(m)
     people.incoming(555, "давай встретимся?")
     m.llm.reply = {"action": "escalate", "category": "meeting", "hold": [hold], "slots": "суббота",
@@ -1594,7 +1559,7 @@ async def test_switching_to_approve_keeps_the_meeting_card(tmp_path):
     assert people.sent_texts(555) == ["в субботу в 18?"]
 
 
-@pytest.mark.parametrize("event", ["self", "intimacy"])
+@pytest.mark.parametrize("event", ["self", "mode"])
 async def test_events_while_the_owner_is_told_what_the_agent_writes_cancel_the_send(tmp_path, event):
     m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
     m.llm.reply = lambda msgs: ({"action": "reply", "messages": ["в субботу в 18?"]}
@@ -1607,7 +1572,7 @@ async def test_events_while_the_owner_is_told_what_the_agent_writes_cancel_the_s
             if event == "self":
                 await m.command("self", 555)
             else:
-                await m.command("chat_mode", "intimacy:off")
+                await m.command("chat_mode", "approve")
         return await real_notify(text, image)
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
@@ -1644,7 +1609,7 @@ async def test_a_chat_paused_without_a_card_is_picked_up_again_at_start(tmp_path
     assert "бот" in inbox[-1] and m.store.open_card(555) is not None
 
 
-@pytest.mark.parametrize("event", ["self", "intimacy"])
+@pytest.mark.parametrize("event", ["self", "mode"])
 async def test_events_during_a_quiet_hours_instruction_cancel_it(tmp_path, event):
     from dataclasses import replace as _replace
     m, people, inbox, clock, card = await meeting_with_hold(tmp_path)
@@ -1659,7 +1624,7 @@ async def test_events_during_a_quiet_hours_instruction_cancel_it(tmp_path, event
             if event == "self":
                 await m.command("self", 555)
             else:
-                await m.command("chat_mode", "intimacy:off")
+                await m.command("chat_mode", "approve")
         return await real_notify(text, image)
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
@@ -1675,7 +1640,7 @@ async def test_a_cancelled_answer_gives_the_card_back(tmp_path):
     async def notify(text, image=None):
         if text.startswith("Пишу"):
             m._notify = real_notify
-            await m.command("chat_mode", "intimacy:off")
+            await m.command("chat_mode", "approve")
         return await real_notify(text, image)
     m._notify = notify
     await m.answer_card(card, "суббота в 18")
@@ -2010,7 +1975,7 @@ async def test_a_first_message_composed_across_the_late_evening_boundary_is_not_
 
 
 async def night_meeting(tmp_path, think_s):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True,
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False,
                                    timezone="Europe/Moscow", late_hours="23:30-01:30", quiet_hours="01:30-09:00")
     await match(m)
     clock.t = at_moscow(0, 20)
@@ -2056,7 +2021,7 @@ def test_imports_are_taken_for_code(text):
 
 
 async def test_a_holding_reply_promised_at_the_end_of_the_night_grace_still_goes_out(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True,
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False,
                                    timezone="Europe/Moscow", late_hours="23:30-01:30", quiet_hours="01:30-09:00")
     await match(m)
     clock.t = at_moscow(2, 59) + 30
@@ -2121,7 +2086,7 @@ def test_only_the_promised_holding_reply_may_miss_the_night_grace(tmp_path):
 
 
 async def test_a_two_message_holding_reply_goes_out_whole_in_a_paused_chat(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "давай встретимся?")
     m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну расписание", "и напишу"],

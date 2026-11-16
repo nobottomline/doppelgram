@@ -150,7 +150,7 @@ account's Saved Messages). Plain text is never a command, so both chats stay usa
 | photo with caption `/like улыбка` or `/dislike` | add a reference photo to your taste |
 | `/rule нравятся спортивные`, `/taste`, `/refs`, `/delete правило 3` | manage the taste profile |
 | `/chat вкл \| выкл \| подтверждение \| авто` | switch conversations on or off and choose drafts or auto |
-| `/chat первым вкл \| выкл`, `/chat порог 9`, `/chat интим вкл \| выкл`, `/chat незнакомые спрашивать \| вести \| игнор` | conversation policies |
+| `/chat первым вкл \| выкл`, `/chat порог 9`, `/chat незнакомые спрашивать \| вести \| игнор` | conversation policies |
 | `/dialogs`, `/lead 123`, `/self 123` | list chats, hand one to the agent, take one over |
 | `/help` | the full list |
 
@@ -290,9 +290,10 @@ only what you decide; in **approve** mode (`/chat подтверждение`) e
   question either: the agent handles them itself (see above).
 - **Money and contacts.** It declines money requests itself and never shares contacts or links; any promise
   to pay comes to you.
-- **Intimacy.** With `intimacy` on (default, for adult owners) it may flirt and talk about it when the person
-  clearly wants it too, never pressures and never asks for photos; graphic sexting comes to you. With it off,
-  intimate topics come to you.
+- **Intimacy.** The agent may flirt and talk about it when the person clearly wants it too, follows their
+  pace, never pressures and never asks for photos. There is no intimacy toggle or sexual-content keyword filter.
+  Older `conversations.intimacy` configuration entries are ignored, and the retired runtime setting is removed
+  when opening the conversation database.
 - **Media it cannot understand,** long voice messages, files and anything unclear.
 
 You can take over any chat at any time: write to the person yourself, or `/self 123`. The agent steps back

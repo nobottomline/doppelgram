@@ -132,14 +132,13 @@ allowed_commands = []        # other commands the model may type; any other text
 
 # Chats with matched people (Leomatch gives a link to the person's Telegram after a mutual like).
 # Off by default. In "approve" mode every message waits for your "ок"; in "auto" the agent writes itself
-# but still sends you "are you a bot?", meetings, money, contacts, explicit topics, media and anything unclear.
+# but still sends you "are you a bot?", meetings, money, contacts, media and anything unclear.
 [conversations]
 enabled = false
 mode = "auto"                  # auto: the agent writes itself | approve: drafts for your «ок» ("/chat подтверждение")
 about_file = "about-me.md"     # true facts about you + what may be embellished
 goal_file = "conversation.md"  # what the conversation is for
 style_file = "style.md"        # examples of how you write
-intimacy = true                # adults: the agent may flirt and talk about intimacy; "/chat интим выкл"
 strangers = "ask"              # someone writes first without a match: ask (a card to you) | lead | ignore
 see_photos = true              # pictures, gif and video frames are shown to the model; stickers read as emoji
 speech = true                  # voice messages and video notes are transcribed (OpenRouter audio model)

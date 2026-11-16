@@ -179,18 +179,18 @@ async def test_ai_question_is_escalated_without_the_model_and_pauses_the_chat(tm
 
 @pytest.mark.parametrize("text,category", [
     ("давай встретимся в субботу", "meeting"), ("скинь на карту 500", None), ("вот мой инст @masha_travel", None),
-    ("пришли нюдс", "explicit"), ("может созвонимся вечером?", "call"),
+    ("пришли нюдс", None), ("может созвонимся вечером?", "call"),
 ])
 def test_sensitive_topics_are_detected(text, category):
     assert classify_incoming(text, None) == category
 
 
-def test_with_intimacy_allowed_graphic_content_still_goes_to_the_owner():
+def test_intimacy_is_handled_without_content_escalation():
     from doppelgram.conversation import classify_outgoing
-    assert classify_incoming("ты такая милая, хочу тебя", None, intimacy=True) is None
-    assert classify_incoming("пришли нюдс", None, intimacy=True) == "explicit"  # no photos, ever
-    assert classify_outgoing("хочу тебя", intimacy=True) is None
-    assert classify_outgoing("интим", intimacy=False) == "explicit"
+    assert classify_incoming("ты такая милая, хочу тебя", None) is None
+    assert classify_incoming("пришли нюдс", None) is None
+    assert classify_outgoing("хочу тебя") is None
+    assert classify_outgoing("интим") is None
     assert classify_outgoing("я не сижу в инсте") is None  # an answer, not a contact
     assert classify_outgoing("пиши в тг @my_handle") == "contact"
     assert classify_outgoing("не, деньги не дам, сорян") is None
@@ -995,25 +995,6 @@ async def test_switching_writing_first_off_before_the_chat_is_looked_at(tmp_path
     await m.command("chat_mode", "first:off")
     await m.tick()
     assert not any("Черновик" in t for t in inbox) and m.llm.calls == []
-
-
-async def test_intimacy_is_an_opt_in_from_config_or_telegram(tmp_path):
-    from doppelgram.config import ConversationConfig as CC
-    assert CC(about_file=Path("a"), goal_file=Path("g"), style_file=Path("s")).intimacy is True  # the default
-    m, people, inbox, clock = make(tmp_path, write_first=True, intimacy=False)
-    await match(m)
-    await m.tick()
-    assert 'escalate with category "explicit" and no messages' in m.llm.calls[-1][0]["content"]
-    await m.command("chat_mode", "intimacy:on")
-    assert "ведёт сам" in inbox[-1]
-    people.incoming(555, "привет)")
-    m.on_message(555)
-    clock.t += 11
-    await m.tick()
-    system = m.llm.calls[-1][0]["content"]
-    assert "Intimacy is allowed" in system
-    from doppelgram.control import parse_owner
-    assert parse_owner("/chat интим вкл").arg == "intimacy:on"
 
 
 async def test_a_call_offer_comes_with_a_draft(tmp_path):

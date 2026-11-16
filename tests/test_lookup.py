@@ -50,9 +50,9 @@ async def chat_with_lookup(tmp_path, first, then=None, answers=None, **over):
 
 
 def test_the_lookup_action_is_offered_only_when_a_search_is_possible():
-    assert '"lookup"' in system_prompt(True, lookup=True)
-    assert '"lookup"' not in system_prompt(True, lookup=False)
-    assert "{lookup" not in system_prompt(False, lookup=False)
+    assert '"lookup"' in system_prompt(lookup=True)
+    assert '"lookup"' not in system_prompt(lookup=False)
+    assert "{lookup" not in system_prompt(lookup=False)
 
 
 async def test_a_lookup_runs_the_search_and_answers_with_the_findings(tmp_path):
@@ -279,7 +279,7 @@ async def test_common_slang_is_built_in_and_can_be_switched_off(tmp_path):
 
 
 def test_an_unknown_word_is_asked_about_not_escalated():
-    prompt = system_prompt(True)
+    prompt = system_prompt()
     assert "anything you do not understand" not in prompt
     assert "is not a reason to escalate: ask about it" in prompt
     assert 'escalate with category "ai_question"' in prompt and "do not escalate" in prompt
@@ -403,7 +403,7 @@ async def test_eval_does_not_credit_an_escalation_made_before_the_trap(tmp_path)
 
 
 async def test_facts_of_a_skipped_draft_never_ride_on_a_later_message(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
     await match(m)
     people.incoming(555, "а ты на чём ездишь?")
     m.llm.reply = {"action": "reply", "messages": ["у меня своя машина"], "new_facts": ["есть машина"]}
@@ -428,7 +428,7 @@ def test_short_names_are_dropped_as_whole_words_only():
 
 
 async def test_facts_in_a_meeting_draft_are_recorded_when_the_owner_sends_it(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "давай встретимся?")
     m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну и напишу"], "slots": "суббота",
@@ -448,7 +448,7 @@ async def test_facts_in_a_meeting_draft_are_recorded_when_the_owner_sends_it(tmp
 
 
 async def test_a_skipped_drafts_facts_do_not_ride_on_a_hold_with_the_same_words(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="approve", write_first=False)
     await match(m)
     people.incoming(555, "а ты на чём ездишь?")
     m.llm.reply = {"action": "reply", "messages": ["гляну и напишу", "у меня своя машина"],
@@ -467,14 +467,13 @@ async def test_a_skipped_drafts_facts_do_not_ride_on_a_hold_with_the_same_words(
     assert not any("есть машина" in n for n in inbox if "about-me" in n)
 
 
-
 def test_a_username_with_short_parts_never_reaches_a_search():
     assert clean_queries(["ann_lee университет", "lee университет", "annual report"], ["ann_lee", "ann", "lee"]) \
         == ["annual report"]
 
 
 async def test_a_hold_sharing_a_line_with_the_draft_does_not_count_its_facts(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "давай встретимся?")
     m.llm.reply = {"action": "escalate", "category": "meeting", "hold": ["гляну и напишу"], "slots": "суббота",
@@ -585,7 +584,6 @@ async def test_a_series_cut_after_its_first_message_still_counts_its_facts(tmp_p
     m.people.send = real
     assert people.sent_texts(555) == ["у меня своя машина"]
     assert m._said(555) == ["есть машина"] and any("есть машина" in n for n in inbox if "about-me" in n)
-
 
 
 def test_a_crash_between_the_note_and_the_record_never_loses_the_note(tmp_path):
@@ -726,7 +724,6 @@ def test_taking_smileys_off_never_corrupts_the_text():
         assert not doubled.search(out) or doubled.search(text), text
 
 
-
 def test_taming_never_changes_what_the_outgoing_checks_see(tmp_path):
     from doppelgram.conversation import classify_outgoing
     m = tamer(tmp_path, ["привет", "ну да"])
@@ -734,8 +731,7 @@ def test_taming_never_changes_what_the_outgoing_checks_see(tmp_path):
         assert classify_outgoing(m._tame([text], [])[0]) == classify_outgoing(text) is not None
 
 
-
-async def test_the_judge_sees_the_owners_goal_and_intimacy_setting(tmp_path):
+async def test_the_judge_sees_the_owners_goal_without_a_retired_permission_setting(tmp_path):
     from test_conversation import FakeLLM
 
     from doppelgram.evaluate import evaluate
@@ -747,11 +743,12 @@ async def test_the_judge_sees_the_owners_goal_and_intimacy_setting(tmp_path):
             seen.append(msgs[0]["content"])
             return {"pass": True, "why": ""}
         return {"action": "reply", "messages": ["понял"]}
-    for intimacy in (True, False):
-        m, people, inbox, clock = make(tmp_path, intimacy=intimacy)
-        await evaluate(m.cfg, FakeLLM(agent), only=["wants_casual"], out=lambda s: None)
+    m, people, inbox, clock = make(tmp_path)
+    await evaluate(m.cfg, FakeLLM(agent), only=["wants_casual"], out=lambda s: None)
     assert "Цель: серьёзные отношения" in seen[0]
-    assert "Intimacy allowed: yes" in seen[0] and "Intimacy allowed: no" in seen[1]
+    assert "Intimacy allowed:" not in seen[0]
+    assert "## The person's dating profile\n" in seen[0] and "## Now\n" in seen[0]
+    assert "{card}" not in seen[0] and "{now}" not in seen[0]
 
 
 
@@ -763,7 +760,7 @@ def test_a_sticker_alone_is_a_greeting_from_a_stranger():
 
 
 async def own_meeting_idea(tmp_path, incoming, hold):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, incoming)
     m.llm.reply = {"action": "escalate", "category": "meeting", "hold": [hold], "slots": "суббота",
@@ -781,7 +778,7 @@ async def test_no_holding_reply_when_the_meeting_is_the_agents_own_idea(tmp_path
 
 
 async def test_on_the_agents_own_idea_they_still_get_a_plain_answer(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "а какие приложения делаешь?")
 
@@ -848,7 +845,7 @@ def test_more_forms_of_a_claim(text):
 
 
 async def test_taking_over_while_the_plain_answer_is_written_stops_everything(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "а какие приложения делаешь?")
 
@@ -867,7 +864,7 @@ async def test_taking_over_while_the_plain_answer_is_written_stops_everything(tm
 
 
 async def test_a_taste_in_the_plain_answer_is_recorded_when_sent(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "а ты какой кофе берёшь?")
 
@@ -932,7 +929,7 @@ def test_tools_and_topics_are_not_the_bot_question(text):
 
 
 async def test_a_plain_answer_with_a_dropped_line_is_not_sent_at_all(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "а ты какой кофе берёшь?")
 
@@ -952,7 +949,7 @@ async def test_a_plain_answer_with_a_dropped_line_is_not_sent_at_all(tmp_path):
 
 
 async def test_a_plain_answer_too_long_to_send_whole_is_not_sent(tmp_path):
-    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False)
     await match(m)
     people.incoming(555, "а ты какой кофе берёшь?")
 

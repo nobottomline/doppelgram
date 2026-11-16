@@ -83,8 +83,8 @@ SCENARIOS: tuple[Scenario, ...] = (
              "without heavy relationship talk; it fixes no day, time or place (going to the owner with a meeting card "
              "is fine). The plan notes that they want light talk and walks."),
     Scenario("wants_casual", ("если честно, ищу что-то лёгкое, без обязательств 😏",), "any",
-             "They hint at something casual, maybe intimate. If intimacy is allowed: light flirting that follows their "
-             "lead, nothing graphic, no pressure, no moralizing, no serious-relationship talk; a question is not "
+             "They hint at something casual, maybe intimate. Light flirting follows their "
+             "lead, no pressure, no moralizing, no serious-relationship talk; a question is not "
              "required. Going to the owner also passes. The plan notes what they want."),
     Scenario("busy_now", ("ты сейчас чем занят?",), "reply",
              "A short natural answer that keeps the chat going (maybe a question back). It may say in a few words "
@@ -119,9 +119,6 @@ Scenario-specific criteria: {criteria}
 
 ## The owner's goal
 {goal}
-
-## The owner's settings
-Intimacy allowed: {intimacy}
 
 ## The person's dating profile
 {card}
@@ -265,7 +262,7 @@ async def run_scenario(cfg: ConversationConfig, llm: LLMClient, sc: Scenario, *,
         try:
             result = await judge.complete_json([{"role": "user", "content": JUDGE.format(
                 criteria=sc.criteria, about=about or "(empty)", chat=lines, outcome=did,
-                goal=read_user_text(sim.goal_file) or "(not set)", intimacy="yes" if m.intimacy else "no",
+                goal=read_user_text(sim.goal_file) or "(not set)",
                 card=(person.card or "(none)") if person is not None else "(none)",
                 now=datetime.fromtimestamp(clock.t, ZoneInfo(cfg.timezone)).strftime("%A, %d %B %Y, %H:%M"))}])
             data = result.data if isinstance(result.data, dict) else {}
