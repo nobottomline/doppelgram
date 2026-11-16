@@ -731,3 +731,23 @@ def test_taming_never_changes_what_the_outgoing_checks_see(tmp_path):
     m = tamer(tmp_path, ["привет", "ну да"])
     for text in ("мой номер 8 (999)) 123-45-67", "а) :) люблю горы\nб) :) люблю море", "1) да)\n2) нет)"):
         assert classify_outgoing(m._tame([text], [])[0]) == classify_outgoing(text) is not None
+
+
+
+async def test_the_judge_sees_the_owners_goal_and_intimacy_setting(tmp_path):
+    from test_conversation import FakeLLM
+
+    from doppelgram.evaluate import evaluate
+    (tmp_path / "goal.md").write_text("Цель: серьёзные отношения", encoding="utf-8")
+    seen: list[str] = []
+
+    def agent(msgs):
+        if "You grade one turn" in msgs[0]["content"]:
+            seen.append(msgs[0]["content"])
+            return {"pass": True, "why": ""}
+        return {"action": "reply", "messages": ["понял"]}
+    for intimacy in (True, False):
+        m, people, inbox, clock = make(tmp_path, intimacy=intimacy)
+        await evaluate(m.cfg, FakeLLM(agent), only=["wants_casual"], out=lambda s: None)
+    assert "Цель: серьёзные отношения" in seen[0]
+    assert "Intimacy allowed: yes" in seen[0] and "Intimacy allowed: no" in seen[1]

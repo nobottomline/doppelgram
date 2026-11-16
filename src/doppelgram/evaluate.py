@@ -109,6 +109,12 @@ Scenario-specific criteria: {criteria}
 ## About the owner
 {about}
 
+## The owner's goal
+{goal}
+
+## The owner's settings
+Intimacy allowed: {intimacy}
+
 ## The chat (oldest first)
 {chat}
 
@@ -244,7 +250,8 @@ async def run_scenario(cfg: ConversationConfig, llm: LLMClient, sc: Scenario, *,
                f"The agent's plan for this person after the turn: {out.memory or '(none)'}")
         try:
             result = await judge.complete_json([{"role": "user", "content": JUDGE.format(
-                criteria=sc.criteria, about=about or "(empty)", chat=lines, outcome=did)}])
+                criteria=sc.criteria, about=about or "(empty)", chat=lines, outcome=did,
+                goal=read_user_text(sim.goal_file) or "(not set)", intimacy="yes" if m.intimacy else "no")}])
             data = result.data if isinstance(result.data, dict) else {}
             out.judge_ok = bool(data.get("pass"))
             out.judge_why = str(data.get("why") or "")[:300]
