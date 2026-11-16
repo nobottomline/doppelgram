@@ -916,7 +916,8 @@ def test_the_bot_guard_is_fast_on_long_messages():
 
     from doppelgram.conversation import classify_incoming, classify_outgoing
     for text in ("ты " + "обычная " * 40 + "девушка?", "я " + "просто " * 60 + "устал", "ты, " * 200 + "ок",
-                 "x" + "\n" * 4094 + "x", "!" * 4000 + "бот", " \n" * 2000):
+                 "x" + "\n" * 4094 + "x", "!" * 4000 + "бот", " \n" * 2000, "1. x\n" * 800,
+                 "1. x" + "\n" * 4000 + "y", "1. x\n" + " \n" * 2000):
         start = time.perf_counter()
         classify_incoming(text, None)
         classify_outgoing(text)
@@ -967,3 +968,10 @@ async def test_a_plain_answer_too_long_to_send_whole_is_not_sent(tmp_path):
         clock.t += 61
         await m.tick()
     assert people.sent_texts(555) == [] and m._said(555) == []
+
+
+
+@pytest.mark.parametrize("text", ["1. люблю горы\n\n2. люблю море", "1) да\n \n\n2) нет", "а. раз\n\nб. два"])
+def test_lists_with_blank_lines_are_still_caught(text):
+    from doppelgram.conversation import classify_outgoing
+    assert classify_outgoing(text) == "assistant"

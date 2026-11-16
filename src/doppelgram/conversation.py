@@ -175,7 +175,7 @@ def _prompt_text(text: str) -> str:
 _ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^[ \t]*import\s+[\w.]+(?:\s+as\s+\w+)?\s*$|^[ \t]*from\s+[\w.]+\s+import\s+[\w*]|\bfunction\s*\w*\s*\(|console\.log|"
                                r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|^[ \t]*return\s+\w+\s*(?:[-+*/%(\[.]|$)|"
                                r"as an ai|language model|языков\w+\s+модел|как\s+ии\b|ии-ассистент|"
-                               r"^[ \t]*(?:1|а|a)[.)][ \t].+\n[ \t]*(?:2|б|b)[.)][ \t]", re.I | re.M)
+                               r"^[ \t]*(?:1|а|a)[.)][ \t].+\n(?:[ \t]*\n)*[ \t]*(?:2|б|b)[.)][ \t]", re.I | re.M)
 # A test whether this is a bot: an assistant's task or an instruction to the model. Not escalated: the agent
 # answers like a person (does not do it), and the prompt gets a heads-up.
 _TASK_IN_RE = re.compile(r"напиши\s+(?:мне\s+)?(?:код|функци|программ|скрипт|сочинени|эссе|стих|реферат|рецепт|текст)|"
