@@ -90,7 +90,7 @@ _FILL = (r"(?:[\s,—–-]+(?:случайно|вообще|что|не|часо
          r"всего|лишь|просто|только|обычный|обычная))*")  # distinct words: linear matching, no blow-up
 _AI_RE = re.compile(
     rf"\b(?:ты|вы|это){_FILL}[\s,—–-]+{_BOT_IS}(?![\w-])"                 # "ты случайно не бот?", "ты — бот?"
-    rf"|^\W*(?:а\s+)?(?:не\s+)?{_BOT_IS}\s*\?"                             # "бот?", "а не бот?"
+    rf"|^[^\w\n]{{0,8}}(?:а\s+)?(?:не\s+)?{_BOT_IS}\s*\?"                  # "бот?", "а не бот?"
     rf"|\b(?:не\s+)?{_BOT_IS}\s+ли\s+(?:ты|вы)\b"                           # "а не бот ли ты?"
     rf"|\b(?:общаюсь|переписываюсь|разговариваю|говорю|болтаю)\s+(?:с|со)\s+{_BOT}(?![\w-])"
     rf"|\b(?:с|со)\s+{_BOT}\s+(?:общаюсь|переписываюсь|разговариваю|говорю|болтаю)"
@@ -172,10 +172,10 @@ def _prompt_text(text: str) -> str:
 
 # What a person never writes in a chat: code, an assistant's phrasing, a numbered list. If the agent produces it,
 # the message does not go out.
-_ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^\s*import\s+[\w.]+(?:\s+as\s+\w+)?\s*$|^\s*from\s+[\w.]+\s+import\s+[\w*]|\bfunction\s*\w*\s*\(|console\.log|"
-                               r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|^\s*return\s+\w+\s*(?:[-+*/%(\[.]|$)|"
+_ASSISTANT_OUT_RE = re.compile(r"```|\bdef\s+\w+\s*\(|^[ \t]*import\s+[\w.]+(?:\s+as\s+\w+)?\s*$|^[ \t]*from\s+[\w.]+\s+import\s+[\w*]|\bfunction\s*\w*\s*\(|console\.log|"
+                               r"\bprint\s*\(|#include|\bSELECT\b.+\bFROM\b|</?[a-z]+[^>]*>|^[ \t]*return\s+\w+\s*(?:[-+*/%(\[.]|$)|"
                                r"as an ai|language model|языков\w+\s+модел|как\s+ии\b|ии-ассистент|"
-                               r"(?:^|\n)\s*(?:1|а|a)[.)]\s.+\n\s*(?:2|б|b)[.)]\s", re.I | re.M)
+                               r"^[ \t]*(?:1|а|a)[.)][ \t].+\n[ \t]*(?:2|б|b)[.)][ \t]", re.I | re.M)
 # A test whether this is a bot: an assistant's task or an instruction to the model. Not escalated: the agent
 # answers like a person (does not do it), and the prompt gets a heads-up.
 _TASK_IN_RE = re.compile(r"напиши\s+(?:мне\s+)?(?:код|функци|программ|скрипт|сочинени|эссе|стих|реферат|рецепт|текст)|"
@@ -1545,8 +1545,8 @@ Answer with ONE JSON object only: {"kind": "dating" | "known" | "business" | "sp
             log.warning("no plain answer for %s: %s", person.user_id, exc)
             return [], {}
         action, raw, data = parse_reply(decision)
-        if action != "reply":
-            return [], {}
+        if action != "reply" or len(raw) > 2:
+            return [], {}  # a longer answer would be cut, and the facts of a cut line never told
         messages = self._tame([humanize(t, lowercase=self.cfg.lowercase)[:self.cfg.max_message_chars]
                                for t in raw][:2], history)
         if not messages or any(classify_outgoing(t, intimacy=self.intimacy) is not None

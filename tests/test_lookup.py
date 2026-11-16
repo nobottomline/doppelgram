@@ -915,7 +915,8 @@ def test_the_bot_guard_is_fast_on_long_messages():
     import time
 
     from doppelgram.conversation import classify_incoming, classify_outgoing
-    for text in ("ты " + "обычная " * 40 + "девушка?", "я " + "просто " * 60 + "устал", "ты, " * 200 + "ок"):
+    for text in ("ты " + "обычная " * 40 + "девушка?", "я " + "просто " * 60 + "устал", "ты, " * 200 + "ок",
+                 "x" + "\n" * 4094 + "x", "!" * 4000 + "бот", " \n" * 2000):
         start = time.perf_counter()
         classify_incoming(text, None)
         classify_outgoing(text)
@@ -938,6 +939,26 @@ async def test_a_plain_answer_with_a_dropped_line_is_not_sent_at_all(tmp_path):
         if "proposal to meet is waiting for the owner" in msgs[1]["content"]:
             return {"action": "reply", "messages": ["обычно капучино", "давай завтра в кафе?"],
                     "new_facts": ["пьёт капучино", "любит кафе"]}
+        return {"action": "escalate", "category": "meeting", "hold": [], "slots": "суббота",
+                "messages": ["давай в субботу кофе выпьем?"]}
+    m.llm.reply = reply
+    await answered(m, people, clock)
+    for _ in range(2):
+        clock.t += 61
+        await m.tick()
+    assert people.sent_texts(555) == [] and m._said(555) == []
+
+
+
+async def test_a_plain_answer_too_long_to_send_whole_is_not_sent(tmp_path):
+    m, people, inbox, clock = make(tmp_path, mode="auto", write_first=False, intimacy=True)
+    await match(m)
+    people.incoming(555, "а ты какой кофе берёшь?")
+
+    def reply(msgs):
+        if "proposal to meet is waiting for the owner" in msgs[1]["content"]:
+            return {"action": "reply", "messages": ["обычно капучино", "без сахара", "у меня своя машина"],
+                    "new_facts": ["пьёт капучино", "есть машина"]}
         return {"action": "escalate", "category": "meeting", "hold": [], "slots": "суббота",
                 "messages": ["давай в субботу кофе выпьем?"]}
     m.llm.reply = reply
